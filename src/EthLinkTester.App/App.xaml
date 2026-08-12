@@ -1,0 +1,16 @@
+<Application
+    x:Class="EthLinkTester.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Instrument-density spacing. This is a technical tool, not a consumer app. -->
+            <Thickness x:Key="PageContentMargin">28,20,28,28</Thickness>
+            <x:Double x:Key="CardCornerRadiusValue">8</x:Double>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

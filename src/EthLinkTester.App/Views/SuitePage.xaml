@@ -1,0 +1,19 @@
+<Page
+    x:Class="EthLinkTester.App.Views.SuitePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:c="using:EthLinkTester.App.Controls">
+
+    <c:PhaseStub Heading="Suite Mode"
+                 PhaseLabel="Phase 5"
+                 Summary="Grade a cable against a test profile and get a verdict. Built for working through a pile of cables one after another.">
+        <c:PhaseStub.Details>
+            <StackPanel Spacing="8">
+                <TextBlock TextWrapping="Wrap" Text="• Cable ID entry, barcode-scanner friendly" />
+                <TextBlock TextWrapping="Wrap" Text="• Profile selection, then run: link characterization, RFC 2544 frame sweep, soak" />
+                <TextBlock TextWrapping="Wrap" Text="• Verdict reports margin against the golden baseline, not a bare pass or fail" />
+                <TextBlock TextWrapping="Wrap" Text="• Long-Run profile engages automatically when nothing above 10BASE-T will link" />
+            </StackPanel>
+        </c:PhaseStub.Details>
+    </c:PhaseStub>
+</Page>

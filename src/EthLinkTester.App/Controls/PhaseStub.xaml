@@ -1,0 +1,36 @@
+<UserControl
+    x:Class="EthLinkTester.App.Controls.PhaseStub"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="{StaticResource PageContentMargin}"
+                    Spacing="16"
+                    MaxWidth="880"
+                    HorizontalAlignment="Left">
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="{x:Bind Heading, Mode=OneWay}"
+                           Style="{StaticResource TitleTextBlockStyle}"
+                           VerticalAlignment="Center" />
+                <Border Background="{ThemeResource ControlFillColorSecondaryBrush}"
+                        BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="8,3"
+                        VerticalAlignment="Center">
+                    <TextBlock Text="{x:Bind PhaseLabel, Mode=OneWay}"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </Border>
+            </StackPanel>
+
+            <TextBlock Text="{x:Bind Summary, Mode=OneWay}"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+            <ContentPresenter Content="{x:Bind Details, Mode=OneWay}" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

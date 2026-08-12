@@ -1,0 +1,19 @@
+<Page
+    x:Class="EthLinkTester.App.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:c="using:EthLinkTester.App.Controls">
+
+    <c:PhaseStub Heading="Settings"
+                 PhaseLabel="Phase 5"
+                 Summary="Thresholds, test profiles, and the safety behaviour that governs how much this app is allowed to disturb your network.">
+        <c:PhaseStub.Details>
+            <StackPanel Spacing="8">
+                <TextBlock TextWrapping="Wrap" Text="• Pass/fail thresholds and named test profiles" />
+                <TextBlock TextWrapping="Wrap" Text="• Golden-cable baseline management" />
+                <TextBlock TextWrapping="Wrap" Text="• Adapter exclusions and default-route warning behaviour" />
+                <TextBlock TextWrapping="Wrap" Text="• Npcap status and simulation mode toggle" />
+            </StackPanel>
+        </c:PhaseStub.Details>
+    </c:PhaseStub>
+</Page>

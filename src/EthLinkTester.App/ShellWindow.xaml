@@ -1,0 +1,84 @@
+<Window
+    x:Class="EthLinkTester.App.ShellWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Custom title bar. Height matches the default caption area so the drag
+             region lines up with the system buttons. -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="40" Padding="14,0,0,0">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+                <FontIcon Glyph="&#xE968;" FontSize="15" />
+                <TextBlock x:Name="AppTitleText"
+                           Text="eth-link-tester"
+                           VerticalAlignment="Center"
+                           Style="{StaticResource CaptionTextBlockStyle}" />
+            </StackPanel>
+        </Grid>
+
+        <muxc:NavigationView
+            x:Name="NavView"
+            Grid.Row="1"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="True"
+            PaneDisplayMode="Left"
+            OpenPaneLength="228"
+            SelectionChanged="NavView_SelectionChanged">
+
+            <muxc:NavigationView.MenuItems>
+                <muxc:NavigationViewItem Content="Rig" Tag="rig" ToolTipService.ToolTip="Adapters, link state, topology">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE968;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+
+                <muxc:NavigationViewItemSeparator />
+                <muxc:NavigationViewItemHeader Content="Test" />
+
+                <muxc:NavigationViewItem Content="Suite Mode" Tag="suite" ToolTipService.ToolTip="Grade cables against a profile">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9D9;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+
+                <muxc:NavigationViewItem Content="Lab Mode" Tag="lab" ToolTipService.ToolTip="Deep-dive one link with live telemetry">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9F5;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+
+                <muxc:NavigationViewItemSeparator />
+                <muxc:NavigationViewItemHeader Content="Records" />
+
+                <muxc:NavigationViewItem Content="Cable Library" Tag="library" ToolTipService.ToolTip="Inventory, history, trends">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8F1;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+
+                <muxc:NavigationViewItem Content="Reports" Tag="reports" ToolTipService.ToolTip="Rendered results and export">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9F9;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+
+                <muxc:NavigationViewItemSeparator />
+                <muxc:NavigationViewItemHeader Content="Power" />
+
+                <muxc:NavigationViewItem Content="PoE" Tag="poe" ToolTipService.ToolTip="Voltage drop calculator and PoE instrumentation">
+                    <muxc:NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE945;" />
+                    </muxc:NavigationViewItem.Icon>
+                </muxc:NavigationViewItem>
+            </muxc:NavigationView.MenuItems>
+
+            <Frame x:Name="ContentFrame" />
+        </muxc:NavigationView>
+    </Grid>
+</Window>

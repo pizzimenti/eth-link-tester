@@ -1,0 +1,18 @@
+<Page
+    x:Class="EthLinkTester.App.Views.LibraryPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:c="using:EthLinkTester.App.Controls">
+
+    <c:PhaseStub Heading="Cable Library"
+                 PhaseLabel="Phase 6"
+                 Summary="Every cable you have tested, tracked by ID over time. A cable that quietly degrades across successive tests is only visible with history.">
+        <c:PhaseStub.Details>
+            <StackPanel Spacing="8">
+                <TextBlock TextWrapping="Wrap" Text="• Inventory by cable ID with label, length, and category" />
+                <TextBlock TextWrapping="Wrap" Text="• Per-cable run history and trend" />
+                <TextBlock TextWrapping="Wrap" Text="• Regression detection against the cable's own earlier results" />
+            </StackPanel>
+        </c:PhaseStub.Details>
+    </c:PhaseStub>
+</Page>

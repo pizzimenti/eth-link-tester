@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Platform-neutral by design. Models, abstractions, grading, and orchestration live here
+    with no Windows dependency, so they stay unit-testable without a desktop session and
+    without hardware. Anything that touches NDIS, WMI, or the registry belongs in the
+    platform layer, not here.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>

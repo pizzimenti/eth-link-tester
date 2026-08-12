@@ -1,0 +1,19 @@
+<Page
+    x:Class="EthLinkTester.App.Views.LabPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:c="using:EthLinkTester.App.Controls">
+
+    <c:PhaseStub Heading="Lab Mode"
+                 PhaseLabel="Phase 8"
+                 Summary="Instrument view for deep-diving a single suspect link, with manual control over everything the orchestrator would otherwise decide for you.">
+        <c:PhaseStub.Details>
+            <StackPanel Spacing="8">
+                <TextBlock TextWrapping="Wrap" Text="• Live strip charts: throughput both directions, latency percentiles, error rate" />
+                <TextBlock TextWrapping="Wrap" Text="• Per-second hardware counter deltas" />
+                <TextBlock TextWrapping="Wrap" Text="• Manual controls: force speed and duplex, toggle offloads, frame generator parameters" />
+                <TextBlock TextWrapping="Wrap" Text="• Ad-hoc soak runs of arbitrary duration" />
+            </StackPanel>
+        </c:PhaseStub.Details>
+    </c:PhaseStub>
+</Page>

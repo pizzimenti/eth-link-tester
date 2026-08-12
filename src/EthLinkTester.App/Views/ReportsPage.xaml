@@ -1,0 +1,19 @@
+<Page
+    x:Class="EthLinkTester.App.Views.ReportsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:c="using:EthLinkTester.App.Controls">
+
+    <c:PhaseStub Heading="Reports"
+                 PhaseLabel="Phase 7"
+                 Summary="Rendered results and export. Reports state their own limits rather than implying a certification this tool cannot provide.">
+        <c:PhaseStub.Details>
+            <StackPanel Spacing="8">
+                <TextBlock TextWrapping="Wrap" Text="• Certification-style PDF, plus CSV and HTML export" />
+                <TextBlock TextWrapping="Wrap" Text="• States explicitly that this measures behavior, not TIA-568 physical-layer parameters" />
+                <TextBlock TextWrapping="Wrap" Text="• Switched topology downgrades report confidence and says a fault cannot be attributed without a swap test" />
+                <TextBlock TextWrapping="Wrap" Text="• Bit-error-rate claims carry the confidence interval actually achieved, never a bare pass" />
+            </StackPanel>
+        </c:PhaseStub.Details>
+    </c:PhaseStub>
+</Page>

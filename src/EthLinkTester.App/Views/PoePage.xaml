@@ -1,0 +1,20 @@
+<Page
+    x:Class="EthLinkTester.App.Views.PoePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:c="using:EthLinkTester.App.Controls">
+
+    <c:PhaseStub Heading="Power over Ethernet"
+                 PhaseLabel="Phase 9 / v2"
+                 Summary="PoE is DC power engineering, not a data-plane test. A NIC cannot measure voltage or current at all, so this section needs external instrumentation.">
+        <c:PhaseStub.Details>
+            <StackPanel Spacing="8">
+                <TextBlock TextWrapping="Wrap" Text="• Voltage-drop calculator — pure math, ships working in v1" />
+                <TextBlock TextWrapping="Wrap" Text="• Per-pair loop resistance, isolating a single broken conductor (v2)" />
+                <TextBlock TextWrapping="Wrap" Text="• Resistance unbalance, which 802.3bt caps at 7% and which skews phantom power (v2)" />
+                <TextBlock TextWrapping="Wrap" Text="• Cable length derived from resistance, useful where no data link is possible at all (v2)" />
+                <TextBlock TextWrapping="Wrap" Text="• Instrumentation: INA228 + RP2040 probes over USB serial, roughly $25 to build" />
+            </StackPanel>
+        </c:PhaseStub.Details>
+    </c:PhaseStub>
+</Page>

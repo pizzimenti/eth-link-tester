@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EthLinkTester.App/EthLinkTester.App.csproj" />
+    <Project Path="src/EthLinkTester.Core/EthLinkTester.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EthLinkTester.Core.Tests/EthLinkTester.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  # NuGet versions are centrally managed in Directory.Packages.props; Dependabot
+  # understands central package management and will update that file directly.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # These ship in lockstep and are pointless to review separately.
+      microsoft-extensions:
+        patterns:
+          - Microsoft.Extensions.*
+      test-stack:
+        patterns:
+          - xunit*
+          - Microsoft.NET.Test.Sdk
+          - coverlet.*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Added in Phase 3 when the Rust engine lands.
+  - package-ecosystem: cargo
+    directory: /engine
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
