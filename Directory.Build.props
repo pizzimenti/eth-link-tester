@@ -1,0 +1,33 @@
+<Project>
+
+  <!--
+    Shared settings for every project. Target frameworks are deliberately NOT set here:
+    the UI project needs a Windows TFM for WinUI 3, while Core and the interop layer stay
+    platform-neutral so they remain unit-testable without a desktop session.
+  -->
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Product identity">
+    <Product>eth-link-tester</Product>
+    <Company>Bradley Pizzimenti</Company>
+    <Copyright>Copyright (c) 2026 Bradley Pizzimenti</Copyright>
+    <Authors>Bradley Pizzimenti</Authors>
+    <RepositoryUrl>https://github.com/pizzimenti/eth-link-tester</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Determinism">
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

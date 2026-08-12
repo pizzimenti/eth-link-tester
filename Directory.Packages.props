@@ -1,0 +1,53 @@
+<Project>
+
+  <!--
+    Central Package Management. Every NuGet version for the whole solution is pinned here.
+
+    Why this file exists beyond the usual reasons: this machine runs SunUp, which upgrades
+    everything winget knows about daily. SunUp does not manage NuGet, so pinning here keeps the
+    build reproducible no matter what the machine's toolchain drifts to. See also global.json
+    (SDK band) and rust-toolchain.toml (Rust compiler).
+
+    Versions verified against the NuGet API on 2026-08-12.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup Label="UI">
+    <!-- WinUI 3 / Fluent 2. Note this is a 2.x product now, not 1.x. -->
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageVersion Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+    <!-- Sustained 30-60 Hz strip-chart redraw; chosen over LiveCharts2 for that reason. -->
+    <PackageVersion Include="ScottPlot.WinUI" Version="5.1.59" />
+  </ItemGroup>
+
+  <ItemGroup Label="Platform interop">
+    <!-- Source-generated P/Invoke for NDIS DeviceIoControl and friends. -->
+    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.298" />
+    <PackageVersion Include="System.Management" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Storage and reporting">
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+    <!-- MIT with no revenue clause, unlike QuestPDF's dual license. MigraDoc gives
+         document-level layout (styled tables, headers) which suits a certification report. -->
+    <PackageVersion Include="PDFsharp-MigraDoc" Version="6.2.4" />
+  </ItemGroup>
+
+  <ItemGroup Label="Hosting">
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Debug" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Testing">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.0" />
+  </ItemGroup>
+
+</Project>
