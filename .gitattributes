@@ -1,0 +1,35 @@
+# Normalize line endings so contributors on different platforms don't produce
+# whole-file diffs. Repo stores LF; Windows checkouts get CRLF where it matters.
+* text=auto eol=lf
+
+# Files that Windows tooling requires CRLF for.
+*.sln       text eol=crlf
+*.ps1       text eol=crlf
+*.psm1      text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# MSBuild files are XML but are edited by Visual Studio, which writes CRLF.
+*.csproj    text eol=crlf
+*.props     text eol=crlf
+*.targets   text eol=crlf
+
+# Rust, C#, and config stay LF everywhere.
+*.rs        text eol=lf
+*.cs        text eol=lf
+*.toml      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binary assets - never touch.
+*.png       binary
+*.ico       binary
+*.jpg       binary
+*.pdf       binary
+*.dll       binary
+*.lib       binary
+*.exe       binary
+*.pcap      binary
+*.pcapng    binary
