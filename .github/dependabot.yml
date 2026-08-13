@@ -24,9 +24,5 @@ updates:
     schedule:
       interval: weekly
 
-  # Added in Phase 3 when the Rust engine lands.
-  - package-ecosystem: cargo
-    directory: /engine
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+  # A cargo entry for /engine belongs here once Phase 3 creates that directory. Declaring it
+  # early made Dependabot fail on every run against a path that does not exist.

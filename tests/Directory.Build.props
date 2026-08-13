@@ -1,0 +1,16 @@
+<Project>
+
+  <!-- A Directory.Build.props here stops MSBuild searching upward, so pull in the root one. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!--
+      CA1707 forbids underscores in member names. Test methods are the standard exception:
+      Method_Expectation_Condition is the xUnit convention and reads far better in failure
+      output than a camel-cased run-on. Scoped to tests only, not silenced project-wide.
+    -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

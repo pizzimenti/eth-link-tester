@@ -2,18 +2,121 @@
     x:Class="EthLinkTester.App.Views.LabPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:c="using:EthLinkTester.App.Controls">
+    xmlns:c="using:EthLinkTester.App.Controls"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:vm="using:EthLinkTester.App.ViewModels"
+    NavigationCacheMode="Required">
 
-    <c:PhaseStub Heading="Lab Mode"
-                 PhaseLabel="Phase 8"
-                 Summary="Instrument view for deep-diving a single suspect link, with manual control over everything the orchestrator would otherwise decide for you.">
-        <c:PhaseStub.Details>
-            <StackPanel Spacing="8">
-                <TextBlock TextWrapping="Wrap" Text="• Live strip charts: throughput both directions, latency percentiles, error rate" />
-                <TextBlock TextWrapping="Wrap" Text="• Per-second hardware counter deltas" />
-                <TextBlock TextWrapping="Wrap" Text="• Manual controls: force speed and duplex, toggle offloads, frame generator parameters" />
-                <TextBlock TextWrapping="Wrap" Text="• Ad-hoc soak runs of arbitrary duration" />
+    <!--
+      NavigationCacheMode="Required" keeps this page and its run alive while the user looks at
+      another section. Without it the Frame tears the page down on navigation, Unloaded fires,
+      and a run in progress is silently destroyed - which would be intolerable once Phase 5
+      soaks run for half an hour.
+
+      The ScrollViewer is the short-window fallback. The rows above the charts are all
+      Height="Auto" and claim space first, so on a small display the Height="*" chart row would
+      otherwise collapse to nothing with no way to reach it. MinHeight guarantees the plots a
+      usable size and lets the view scroll instead.
+    -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
+        <Grid Margin="{StaticResource PageContentMargin}" RowSpacing="16" MinHeight="640">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!--
+              Stated loudly and permanently while simulated. A plausible chart that never
+              touched a cable is worse than no chart, so this is not dismissable.
+            -->
+            <muxc:InfoBar Grid.Row="0"
+                          IsOpen="{x:Bind ViewModel.IsSimulated, Mode=OneWay}"
+                          IsClosable="False"
+                          Severity="Warning"
+                          Title="Simulated data"
+                          Message="No hardware is being measured. These readings are synthesised to exercise the UI; the packet engine arrives in Phase 3." />
+
+            <muxc:InfoBar Grid.Row="1"
+                          IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+                          IsClosable="False"
+                          Severity="Error"
+                          Title="Run stopped"
+                          Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" />
+
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <StackPanel Spacing="4" Visibility="{x:Bind vm:LabViewModel.SimulationVisibility}">
+                    <TextBlock Text="Link behaviour" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="150"
+                              ItemsSource="{x:Bind vm:LabViewModel.Profiles}"
+                              SelectedItem="{x:Bind ViewModel.Profile, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Link speed" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="130"
+                              DisplayMemberPath="Label"
+                              ItemsSource="{x:Bind vm:LabViewModel.LinkSpeedOptions}"
+                              SelectedItem="{x:Bind ViewModel.SelectedLinkSpeed, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
+                    <Button Content="Start" Style="{StaticResource AccentButtonStyle}"
+                            Command="{x:Bind ViewModel.StartCommand}" />
+                    <Button Content="Stop" Command="{x:Bind ViewModel.StopCommand}" />
+                </StackPanel>
             </StackPanel>
-        </c:PhaseStub.Details>
-    </c:PhaseStub>
+
+            <!--
+              Current-value readouts. These answer "what is it right now", which a line chart
+              only answers after the reader finds the right end of the line.
+
+              Equal star columns rather than a StackPanel: content-sized tiles overflow and clip
+              the rightmost one once the labels get long, and losing the error count off the edge
+              of the window is the worst possible tile to lose.
+            -->
+            <Grid Grid.Row="3" ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <c:StatTile Grid.Column="0" Label="Transmit" Unit="Mbps" Value="{x:Bind ViewModel.TxDisplay, Mode=OneWay}" />
+                <c:StatTile Grid.Column="1" Label="Receive" Unit="Mbps" Value="{x:Bind ViewModel.RxDisplay, Mode=OneWay}" />
+                <c:StatTile Grid.Column="2" Label="Latency p50" Unit="&#181;s" Value="{x:Bind ViewModel.LatencyP50Display, Mode=OneWay}" />
+                <c:StatTile Grid.Column="3" Label="Latency p99" Unit="&#181;s" Value="{x:Bind ViewModel.LatencyP99Display, Mode=OneWay}" />
+                <c:StatTile Grid.Column="4" Label="Receive errors" Unit="frames" Value="{x:Bind ViewModel.RxErrorsDisplay, Mode=OneWay}" />
+            </Grid>
+
+            <!--
+              Two separate plots, never one with two y-axes. Throughput is megabits per second
+              and latency is microseconds; overlaying them on a shared axis would be a dual-axis
+              chart, which invites the reader to compare two things that have no common scale.
+            -->
+            <Grid Grid.Row="4" RowSpacing="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border x:Name="ThroughputHost" Grid.Row="0"
+                        CornerRadius="8"
+                        BorderThickness="1"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+                <Border x:Name="LatencyHost" Grid.Row="1"
+                        CornerRadius="8"
+                        BorderThickness="1"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+            </Grid>
+        </Grid>
+    </ScrollViewer>
 </Page>

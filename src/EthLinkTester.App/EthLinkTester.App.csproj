@@ -25,11 +25,21 @@
     <AssemblyName>EthLinkTester</AssemblyName>
   </PropertyGroup>
 
+  <!--
+    Simulation is a Debug-only feature. Contributors building from source get the full UI with
+    no NICs and no Npcap installed, while a released binary contains no code path that can
+    render synthetic data as though it were a measurement.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DefineConstants>$(DefineConstants);SIMULATION</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="ScottPlot.WinUI" />
   </ItemGroup>
 
   <ItemGroup>
