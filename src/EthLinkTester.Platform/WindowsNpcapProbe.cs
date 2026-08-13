@@ -27,6 +27,12 @@ public sealed class WindowsNpcapProbe : INpcapProbe
 
     private const string ServiceName = "npcap";
 
+    /// <summary>
+    /// Npcap's own versions are 0.x and 1.x, so a major at or above this came from the
+    /// WinPcap-compatibility version resource rather than from Npcap.
+    /// </summary>
+    private const int WinPcapCompatibilityMajor = 2;
+
     public Task<NpcapStatus> DetectAsync(CancellationToken cancellationToken = default) =>
         Task.Run(
             () =>
@@ -44,8 +50,7 @@ public sealed class WindowsNpcapProbe : INpcapProbe
                     Environment.GetFolderPath(Environment.SpecialFolder.System), "Npcap");
                 var hasDriverFiles = File.Exists(Path.Combine(driverDirectory, "wpcap.dll"));
 
-                var installed = hasDriverFiles || key is not null;
-                if (!installed)
+                if (!hasDriverFiles && key is null)
                 {
                     return NpcapStatus.Absent;
                 }
@@ -53,6 +58,7 @@ public sealed class WindowsNpcapProbe : INpcapProbe
                 return new NpcapStatus
                 {
                     Installed = true,
+                    DriverFilesPresent = hasDriverFiles,
                     Version = ReadVersion(key, driverDirectory),
                     ServiceRunning = IsServiceRunning(),
                     WinPcapCompatibilityMode = DetectWinPcapMode(key),
@@ -76,26 +82,40 @@ public sealed class WindowsNpcapProbe : INpcapProbe
     }
 
     /// <summary>
-    /// The installed version, preferring the DLL's own file version over the registry.
+    /// The installed version, from the registry in preference to the DLL's file version.
     /// </summary>
     /// <remarks>
-    /// The registry value is written by the installer and can be stale after a repair or a manual
-    /// file replacement; the DLL is the thing that actually gets loaded.
+    /// The obvious ordering is wrong here. Npcap ships a <c>wpcap.dll</c> whose version resource
+    /// deliberately advertises a <em>WinPcap</em> version - historically 4.1.0.2980 - so that
+    /// applications expecting WinPcap bind to it happily. Reading that as Npcap's own version
+    /// would report "Npcap 4.1.0 is ready" on every installation and silently disable the
+    /// minimum-version check, since 4.1 clears any 1.x floor.
+    /// <para>
+    /// So the registry, which the installer writes with the real Npcap version, is authoritative.
+    /// The file version is a fallback only, and a major version at or above 2 is rejected as the
+    /// compatibility resource rather than believed - Npcap's own numbering is 0.x and 1.x.
+    /// </para>
     /// </remarks>
     private static Version? ReadVersion(RegistryKey? key, string driverDirectory)
     {
-        var wpcap = Path.Combine(driverDirectory, "wpcap.dll");
-        if (File.Exists(wpcap))
+        if (Version.TryParse(key?.GetValue("Version") as string, out var fromRegistry))
         {
-            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(wpcap);
-            if (info.FileMajorPart > 0)
-            {
-                return new Version(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart);
-            }
+            return fromRegistry;
         }
 
-        var text = key?.GetValue("Version") as string;
-        return Version.TryParse(text, out var parsed) ? parsed : null;
+        var wpcap = Path.Combine(driverDirectory, "wpcap.dll");
+        if (!File.Exists(wpcap))
+        {
+            return null;
+        }
+
+        var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(wpcap);
+        if (info.FileMajorPart is 0 or >= WinPcapCompatibilityMajor)
+        {
+            return null;
+        }
+
+        return new Version(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart);
     }
 
     /// <summary>
@@ -108,9 +128,21 @@ public sealed class WindowsNpcapProbe : INpcapProbe
     /// </remarks>
     private static bool DetectWinPcapMode(RegistryKey? key)
     {
-        if (key?.GetValue("WinPcapCompatible") is { } flag)
+        // Tolerant of the value's type. Convert.ToInt32 throws FormatException on a string like
+        // "yes" and InvalidCastException on REG_BINARY, and either escapes DetectAsync and
+        // degrades the whole preflight to "could not determine" over one unexpected registry
+        // value.
+        switch (key?.GetValue("WinPcapCompatible"))
         {
-            return Convert.ToInt32(flag, CultureInfo.InvariantCulture) != 0;
+            case int number:
+                return number != 0;
+            case string text when int.TryParse(text, CultureInfo.InvariantCulture, out var parsed):
+                return parsed != 0;
+            case string text:
+                return text.Equals("true", StringComparison.OrdinalIgnoreCase)
+                    || text.Equals("yes", StringComparison.OrdinalIgnoreCase);
+            case byte[] { Length: > 0 } bytes:
+                return bytes[0] != 0;
         }
 
         return File.Exists(Path.Combine(

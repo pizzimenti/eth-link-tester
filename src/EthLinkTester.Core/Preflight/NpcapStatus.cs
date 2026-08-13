@@ -17,6 +17,9 @@ public enum NpcapReadiness
 
     /// <summary>Installed in WinPcap compatibility mode, which this app cannot use safely.</summary>
     WinPcapCompatibilityMode,
+
+    /// <summary>Registered, but the driver files are not there. An incomplete install or removal.</summary>
+    FilesMissing,
 }
 
 /// <summary>
@@ -50,6 +53,18 @@ public sealed record NpcapStatus
 
     public required bool Installed { get; init; }
 
+    /// <summary>
+    /// Whether the driver's own files are present, as distinct from a registry key claiming they
+    /// are.
+    /// </summary>
+    /// <remarks>
+    /// A registry key routinely survives an incomplete uninstall, so it proves registration and
+    /// nothing else. Without <c>wpcap.dll</c> nothing can capture whatever the registry says, and
+    /// the remedy is a reinstall - not "start the service", which is the advice a machine in this
+    /// state would otherwise be given.
+    /// </remarks>
+    public bool DriverFilesPresent { get; init; }
+
     public Version? Version { get; init; }
 
     public bool ServiceRunning { get; init; }
@@ -67,8 +82,14 @@ public sealed record NpcapStatus
 
     public string? InstallPath { get; init; }
 
+    /// <remarks>
+    /// Ordered by which remedy subsumes the others. Reinstalling fixes compatibility mode, a
+    /// missing file, and an old version, and restarts the service on the way - so leading with a
+    /// stopped service would send the user round the loop twice.
+    /// </remarks>
     public NpcapReadiness Readiness =>
         !Installed ? NpcapReadiness.NotInstalled
+        : !DriverFilesPresent ? NpcapReadiness.FilesMissing
         : WinPcapCompatibilityMode ? NpcapReadiness.WinPcapCompatibilityMode
         : Version is not null && Version < MinimumVersion ? NpcapReadiness.TooOld
         : !ServiceRunning ? NpcapReadiness.ServiceStopped
@@ -88,6 +109,8 @@ public sealed record NpcapStatus
             $"Npcap {Version} is older than {MinimumVersion}, which this app has not verified.",
         NpcapReadiness.WinPcapCompatibilityMode =>
             "Npcap is installed in WinPcap compatibility mode, which this app cannot use safely.",
+        NpcapReadiness.FilesMissing =>
+            "Npcap is registered but its driver files are missing.",
         _ => "Npcap status is unknown.",
     };
 
@@ -109,6 +132,10 @@ public sealed record NpcapStatus
             "replaces the system-wide WinPcap libraries, so this app cannot tell which " +
             "implementation it is bound to and any other capture software on this machine is " +
             "silently affected too.",
+        NpcapReadiness.FilesMissing =>
+            $"Reinstall Npcap from {DownloadUrl}. A registry key without driver files is what an " +
+            "interrupted install or a partial uninstall leaves behind - nothing can capture in " +
+            "this state, and starting the service will not help.",
         _ => null,
     };
 

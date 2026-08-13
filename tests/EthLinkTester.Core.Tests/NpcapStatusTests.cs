@@ -7,9 +7,11 @@ public class NpcapStatusTests
     private static NpcapStatus Installed(
         string version = "1.79",
         bool running = true,
-        bool winPcapMode = false) => new()
+        bool winPcapMode = false,
+        bool driverFiles = true) => new()
         {
             Installed = true,
+            DriverFilesPresent = driverFiles,
             Version = Version.Parse(version),
             ServiceRunning = running,
             WinPcapCompatibilityMode = winPcapMode,
@@ -93,9 +95,42 @@ public class NpcapStatusTests
     [Fact]
     public void AnUnreadableVersionDoesNotFailThePreflight()
     {
-        var status = new NpcapStatus { Installed = true, ServiceRunning = true };
+        var status = new NpcapStatus
+        {
+            Installed = true,
+            DriverFilesPresent = true,
+            ServiceRunning = true,
+        };
 
         Assert.Equal(NpcapReadiness.Ready, status.Readiness);
         Assert.Contains("version unknown", status.Headline, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A registry key proves registration and nothing else - it routinely survives an incomplete
+    /// uninstall. Without the driver files nothing can capture, and "start the service" is the
+    /// wrong advice for a machine that needs a reinstall.
+    /// </summary>
+    [Fact]
+    public void ARegistryKeyWithoutDriverFilesIsABrokenInstallNotAStoppedService()
+    {
+        var status = Installed(driverFiles: false, running: false);
+
+        Assert.Equal(NpcapReadiness.FilesMissing, status.Readiness);
+        Assert.False(status.CanRunLiveTests);
+        Assert.Contains("Reinstall", status.Remedy!, StringComparison.Ordinal);
+        Assert.DoesNotContain("start the service", status.Remedy!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Remedies are ordered by which subsumes the others: a reinstall fixes missing files,
+    /// compatibility mode, and an old version, and restarts the service on the way.
+    /// </summary>
+    [Fact]
+    public void MissingFilesOutrankEveryOtherProblem()
+    {
+        var status = Installed(version: "0.99", driverFiles: false, running: false, winPcapMode: true);
+
+        Assert.Equal(NpcapReadiness.FilesMissing, status.Readiness);
     }
 }

@@ -321,7 +321,8 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
             },
             cancellationToken);
 
-    private Task WithLockAsync(Action operation, CancellationToken cancellationToken) =>
+    /// <summary>Void-returning overload. Task&lt;object?&gt; is a Task, so callers return it directly.</summary>
+    private Task<object?> WithLockAsync(Action operation, CancellationToken cancellationToken) =>
         WithLockAsync<object?>(
             () =>
             {

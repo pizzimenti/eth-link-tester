@@ -26,8 +26,6 @@ namespace EthLinkTester.Platform;
 /// </remarks>
 public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
 {
-    private const string AdvancedPropertyClass = "MSFT_NetAdapterAdvancedPropertySettingData";
-
     public Task<IReadOnlyList<AdapterProperty>> ReadPropertiesAsync(
         string adapterId, CancellationToken cancellationToken = default)
     {
@@ -35,41 +33,7 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
         var instanceId = Cim.ToInstanceId(adapterId);
 
         return Task.Run<IReadOnlyList<AdapterProperty>>(
-            () =>
-            {
-                var properties = new List<AdapterProperty>();
-
-                // Advanced properties key on "{guid}::*Keyword", so this is a prefix match rather
-                // than equality.
-                foreach (var property in Cim.Query(
-                    $"SELECT * FROM {AdvancedPropertyClass} WHERE InstanceID LIKE '{instanceId}::%'"))
-                {
-                    using (property)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        var keyword = Cim.Text(property, "RegistryKeyword");
-                        if (string.IsNullOrEmpty(keyword))
-                        {
-                            continue;
-                        }
-
-                        properties.Add(new AdapterProperty
-                        {
-                            Keyword = keyword,
-                            DisplayName = Cim.Text(property, "DisplayName"),
-                            RegistryValue = Cim.Text(property, "RegistryValue") ?? string.Empty,
-                            DisplayValue = Cim.Text(property, "DisplayValue"),
-                            DefaultRegistryValue = Cim.Text(property, "DefaultRegistryValue"),
-                            Options = PairOptions(
-                                Cim.TextArray(property, "ValidRegistryValues"),
-                                Cim.TextArray(property, "ValidDisplayValues")),
-                        });
-                    }
-                }
-
-                return properties;
-            },
+            () => AdvancedProperties.Read(instanceId, cancellationToken),
             cancellationToken);
     }
 
@@ -89,7 +53,7 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
             () =>
             {
                 using var property = Cim.Query(
-                        $"SELECT * FROM {AdvancedPropertyClass} " +
+                        $"SELECT * FROM {AdvancedProperties.ClassName} " +
                         $"WHERE InstanceID = '{instanceId}::{validated}'")
                     .FirstOrDefault()
                     ?? throw MissingProperty(adapterId, instanceId, validated);
@@ -116,7 +80,7 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
     private static Exception MissingProperty(string adapterId, string instanceId, string keyword)
     {
         var anyProperty = Cim.Query(
-            $"SELECT * FROM {AdvancedPropertyClass} WHERE InstanceID LIKE '{instanceId}::%'");
+            $"SELECT * FROM {AdvancedProperties.ClassName} WHERE InstanceID LIKE '{instanceId}::%'");
 
         foreach (var instance in anyProperty)
         {
@@ -129,30 +93,4 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
                 $"Adapter '{adapterId}' has no advanced property '{keyword}'.");
     }
 
-    /// <summary>
-    /// Zips the driver's two parallel valid-value lists into one option per entry.
-    /// </summary>
-    /// <remarks>
-    /// The pairing is positional and the lists are supposed to be the same length. When they are
-    /// not, the surplus is dropped rather than guessed at: an option whose display string belongs
-    /// to a different registry value would let the app write one setting while telling the user it
-    /// wrote another.
-    /// </remarks>
-    private static List<AdapterPropertyOption> PairOptions(
-        string[] registryValues, string[] displayValues)
-    {
-        var count = Math.Min(registryValues.Length, displayValues.Length);
-        var options = new List<AdapterPropertyOption>(count);
-
-        for (var i = 0; i < count; i++)
-        {
-            options.Add(new AdapterPropertyOption
-            {
-                RegistryValue = registryValues[i],
-                DisplayValue = displayValues[i],
-            });
-        }
-
-        return options;
-    }
 }

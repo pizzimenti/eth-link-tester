@@ -84,15 +84,15 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
     {
         ArgumentNullException.ThrowIfNull(adapter);
 
-        var property = await FindPropertyAsync(adapter.Id, SpeedDuplexKeyword, cancellationToken)
-            .ConfigureAwait(false);
+        var property = await FindPropertyAsync(
+            adapter.Id, WellKnownKeywords.SpeedDuplex, cancellationToken).ConfigureAwait(false);
 
         var registryValue = property.RegistryValueFor(setting)
             ?? throw new InvalidOperationException(
                 $"'{adapter.Name}' does not offer {setting}. " +
                 $"Available: {string.Join(", ", property.Options.Select(o => o.DisplayValue))}.");
 
-        await ApplyAsync(adapter, SpeedDuplexKeyword, registryValue, cancellationToken)
+        await ApplyAsync(adapter, WellKnownKeywords.SpeedDuplex, registryValue, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -172,9 +172,6 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
             JournalCleared = failures.Count == 0,
         };
     }
-
-    /// <summary>The registry keyword every driver uses for forced speed and duplex.</summary>
-    private const string SpeedDuplexKeyword = "*SpeedDuplex";
 
     /// <summary>
     /// The value each property held before this app touched it, one entry per property.

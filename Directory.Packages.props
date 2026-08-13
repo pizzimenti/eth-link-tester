@@ -13,6 +13,13 @@
 
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      Transitive pinning makes every entry below load-bearing, which is why there are no
+      placeholders here for packages a later phase will want. A PackageVersion with no matching
+      PackageReference is not inert: the moment any dependency pulls that id in transitively, this
+      file silently pins it to the version written here. Add the entry when the reference is
+      added, not before.
+    -->
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
 
@@ -20,14 +27,11 @@
     <!-- WinUI 3 / Fluent 2. Note this is a 2.x product now, not 1.x. -->
     <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageVersion Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
     <!-- Sustained 30-60 Hz strip-chart redraw; chosen over LiveCharts2 for that reason. -->
     <PackageVersion Include="ScottPlot.WinUI" Version="5.1.59" />
   </ItemGroup>
 
   <ItemGroup Label="Platform interop">
-    <!-- Source-generated P/Invoke for NDIS DeviceIoControl and friends. -->
-    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.298" />
     <!--
       MI, not System.Management. root\StandardCimv2 is an MI-hosted provider: reads work through
       the legacy WMI COM API but ModifyInstance does not, failing with "Object or property already
@@ -47,18 +51,18 @@
     <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.11" />
   </ItemGroup>
 
-  <ItemGroup Label="Storage and reporting">
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
-    <!-- MIT with no revenue clause, unlike QuestPDF's dual license. MigraDoc gives
-         document-level layout (styled tables, headers) which suits a certification report. -->
-    <PackageVersion Include="PDFsharp-MigraDoc" Version="6.2.4" />
-  </ItemGroup>
-
-  <ItemGroup Label="Hosting">
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.11" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Debug" Version="10.0.11" />
-  </ItemGroup>
+  <!--
+    Not yet listed, and deliberately so - each lands with the code that uses it:
+      Microsoft.Windows.CsWin32        Phase 3, NDIS DeviceIoControl
+      Microsoft.Data.Sqlite            Phase 6, runs and cable library
+      PDFsharp-MigraDoc                Phase 7, the certification report. MIT with no revenue
+                                       clause, unlike QuestPDF's dual licence, and MigraDoc's
+                                       document-level layout suits a report better than a
+                                       drawing API.
+      Microsoft.Extensions.*           when there is an object graph worth injecting. WinUI 3
+                                       navigation constructs pages itself, so DI today would buy
+                                       a service locator rather than constructor injection.
+  -->
 
   <ItemGroup Label="Testing">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />

@@ -55,56 +55,25 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
             {
                 var (negotiatedSpeed, maxSpeedBits, driverVersion) = ResolveAdapter(instanceId);
 
-                var keywords = new List<string>();
-                var forceable = new List<SpeedDuplex>();
-                var supportsMdi = false;
-                var supportsJumbo = false;
+                // The same parsed list the configurator works from. Reading the raw CIM a second
+                // time here meant two parsers over one data source, kept in step by hand.
+                var properties = AdvancedProperties.Read(instanceId, cancellationToken);
 
-                // Advanced properties key on "{guid}::*Keyword", so this is a prefix match rather
-                // than equality. The interface GUID cannot contain a WQL wildcard, so the
-                // validated id needs no further escaping.
-                foreach (var property in Cim.Query(
-                    "SELECT * FROM MSFT_NetAdapterAdvancedPropertySettingData " +
-                    $"WHERE InstanceID LIKE '{instanceId}::%'"))
-                {
-                    using (property)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        var keyword = Cim.Prop(property, "RegistryKeyword") as string;
-                        if (string.IsNullOrEmpty(keyword))
-                        {
-                            continue;
-                        }
-
-                        keywords.Add(keyword);
-
-                        if (keyword.Equals("*SpeedDuplex", StringComparison.OrdinalIgnoreCase))
-                        {
-                            forceable.AddRange(
-                                SpeedDuplexParser.ParseAll(Cim.Prop(property, "ValidDisplayValues") as string[]));
-                        }
-                        else if (keyword.Contains("MDI", StringComparison.OrdinalIgnoreCase))
-                        {
-                            supportsMdi = true;
-                        }
-                        else if (keyword.Equals("*JumboPacket", StringComparison.OrdinalIgnoreCase))
-                        {
-                            supportsJumbo = true;
-                        }
-                    }
-                }
+                var speedDuplex = properties.FirstOrDefault(
+                    p => p.Keyword.Equals(WellKnownKeywords.SpeedDuplex, StringComparison.OrdinalIgnoreCase));
 
                 return new AdapterCapabilities
                 {
                     AdapterId = adapterId,
-                    ForceableSettings = forceable,
+                    ForceableSettings = SpeedDuplexParser.ParseAll(
+                        speedDuplex?.Options.Select(o => o.DisplayValue)),
                     MaximumSpeed = MaximumSpeed(maxSpeedBits),
                     NegotiatedSpeed = negotiatedSpeed,
-                    SupportsMdiControl = supportsMdi,
-                    SupportsJumboFrames = supportsJumbo,
+                    SupportsMdiControl = properties.Any(p => WellKnownKeywords.IsMdiControl(p.Keyword)),
+                    SupportsJumboFrames = properties.Any(
+                        p => p.Keyword.Equals(WellKnownKeywords.JumboPacket, StringComparison.OrdinalIgnoreCase)),
                     DriverVersion = driverVersion,
-                    AdvancedPropertyKeywords = keywords,
+                    AdvancedPropertyKeywords = [.. properties.Select(p => p.Keyword)],
                 };
             },
             cancellationToken);
