@@ -92,8 +92,7 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
                         $"SELECT * FROM {AdvancedPropertyClass} " +
                         $"WHERE InstanceID = '{instanceId}::{validated}'")
                     .FirstOrDefault()
-                    ?? throw new InvalidOperationException(
-                        $"Adapter '{adapterId}' has no advanced property '{validated}'.");
+                    ?? throw MissingProperty(adapterId, instanceId, validated);
 
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -103,6 +102,31 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
                 Cim.Modify(property);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Explains a missing property: is the adapter gone, or just this setting?
+    /// </summary>
+    /// <remarks>
+    /// The distinction decides whether a restore entry is worth retrying. A USB adapter that has
+    /// been unplugged will never come back by trying again, so its entry must be abandoned rather
+    /// than left to fail on every launch forever. Costs an extra query, but only on a path that
+    /// has already failed.
+    /// </remarks>
+    private static Exception MissingProperty(string adapterId, string instanceId, string keyword)
+    {
+        var anyProperty = Cim.Query(
+            $"SELECT * FROM {AdvancedPropertyClass} WHERE InstanceID LIKE '{instanceId}::%'");
+
+        foreach (var instance in anyProperty)
+        {
+            instance.Dispose();
+        }
+
+        return anyProperty.Count == 0
+            ? new AdapterNotFoundException(adapterId)
+            : new InvalidOperationException(
+                $"Adapter '{adapterId}' has no advanced property '{keyword}'.");
     }
 
     /// <summary>

@@ -99,15 +99,35 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
     public async Task<RestoreOutcome> RestoreAllAsync(CancellationToken cancellationToken = default)
     {
         var pending = await _journal.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
-        if (pending.Count == 0)
+
+        if (pending.IsEmpty)
         {
             return RestoreOutcome.Empty;
         }
 
+        // A journal whose every line is corrupt cannot be acted on, and leaving it in place is
+        // actively harmful: the next append lands after a partial line and is unreadable too, so
+        // one torn write would otherwise turn the journal into something that silently swallows
+        // the rest of the run. Discard it and say so - adapters may still be altered, and only
+        // the user can check now.
+        if (pending.IsUnreadable)
+        {
+            await _journal.DiscardAsync(cancellationToken).ConfigureAwait(false);
+
+            return new RestoreOutcome
+            {
+                Restored = [],
+                Failures = [],
+                UnreadableRecords = pending.UnreadableLines,
+                JournalCleared = true,
+            };
+        }
+
         var restored = new List<PendingRestore>();
+        var abandoned = new List<PendingRestore>();
         var failures = new List<RestoreFailure>();
 
-        foreach (var entry in OriginalValues(pending))
+        foreach (var entry in OriginalValues(pending.Entries))
         {
             try
             {
@@ -117,25 +137,39 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
                 restored.Add(entry);
             }
+            catch (AdapterNotFoundException)
+            {
+                // Retrying cannot help - the hardware is gone. Keeping the entry would fail on
+                // every launch forever and show an alarm the user has no way to clear.
+                abandoned.Add(entry);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failures.Add(new RestoreFailure { Entry = entry, Reason = ex.Message });
             }
         }
 
-        // Clearing is the one moment the safety net comes off, so it happens only when every
-        // entry is genuinely back. Anything left unrestored stays journaled for the next launch.
-        var cleared = failures.Count == 0;
-        if (cleared)
+        // Removing an entry is the one moment its safety net comes off, so only the entries
+        // genuinely dealt with are removed. Anything that failed stays for the next launch, and
+        // removal is by identity so a concurrent run's new entries survive.
+        var settled = restored.Concat(abandoned).ToList();
+        var resolvedEntries = settled
+            .SelectMany(s => pending.Entries.Where(
+                e => e.AdapterId == s.AdapterId && e.PropertyKeyword == s.PropertyKeyword))
+            .ToList();
+
+        if (resolvedEntries.Count > 0)
         {
-            await _journal.ClearAsync(cancellationToken).ConfigureAwait(false);
+            await _journal.RemoveAsync(resolvedEntries, cancellationToken).ConfigureAwait(false);
         }
 
         return new RestoreOutcome
         {
             Restored = restored,
             Failures = failures,
-            JournalCleared = cleared,
+            Abandoned = abandoned,
+            UnreadableRecords = pending.UnreadableLines,
+            JournalCleared = failures.Count == 0,
         };
     }
 

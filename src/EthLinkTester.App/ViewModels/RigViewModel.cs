@@ -25,6 +25,17 @@ internal sealed partial class RigViewModel : ObservableObject
     private readonly IAdapterConfigurator _configurator;
     private readonly INpcapProbe _npcap;
 
+    /// <summary>
+    /// Entries a failed recovery left behind, carried into the pre-run check.
+    /// </summary>
+    /// <remarks>
+    /// Without this the <see cref="RunHazard.UnrestoredChanges"/> warning is unreachable, which
+    /// makes it the most dangerous kind of dead code: the hazard it describes - a new run
+    /// recording leftover values as the originals, and so making them permanent - is real whether
+    /// or not anything is watching for it.
+    /// </remarks>
+    private IReadOnlyList<PendingRestore> _unrestored = [];
+
     public RigViewModel()
         : this(
             new WindowsAdapterProvider(),
@@ -119,8 +130,23 @@ internal sealed partial class RigViewModel : ObservableObject
     /// </summary>
     public async Task InitializeAsync()
     {
-        await RecoverAsync();
-        await CheckNpcapAsync();
+        // Busy for the whole sequence, not just the probe. Recovery writes adapter settings, and
+        // leaving Re-probe live during it would let a click run an enumeration concurrently with
+        // the restore that is still changing what it would enumerate.
+        IsBusy = true;
+        RefreshCommand.NotifyCanExecuteChanged();
+
+        try
+        {
+            await RecoverAsync();
+            await CheckNpcapAsync();
+        }
+        finally
+        {
+            IsBusy = false;
+            RefreshCommand.NotifyCanExecuteChanged();
+        }
+
         await RefreshAsync();
     }
 
@@ -135,22 +161,67 @@ internal sealed partial class RigViewModel : ObservableObject
                 return;
             }
 
-            // A non-empty journal at startup is proof that a previous run did not clean up after
-            // itself, so this is stated as fact rather than hedged.
-            RecoverySeverity = outcome.JournalCleared ? InfoBarSeverity.Success : InfoBarSeverity.Error;
-            RecoveryMessage = outcome.JournalCleared
-                ? $"A previous run ended without restoring {outcome.Restored.Count} adapter " +
-                  $"setting{(outcome.Restored.Count == 1 ? "" : "s")}. " +
-                  $"Put back: {string.Join("; ", outcome.Restored)}."
-                : $"Could not restore {outcome.Failures.Count} adapter setting" +
-                  $"{(outcome.Failures.Count == 1 ? "" : "s")} left by a previous run. " +
-                  $"{string.Join("; ", outcome.Failures)}. These will be retried on the next launch.";
+            // Anything still unrestored has to reach the pre-run check, or a new run would record
+            // the leftover values as the originals and make them permanent.
+            _unrestored = [.. outcome.Failures.Select(f => f.Entry)];
+
+            RecoverySeverity = outcome.NeedsAttention ? InfoBarSeverity.Error : InfoBarSeverity.Success;
+            RecoveryMessage = DescribeRecovery(outcome);
         }
         catch (Exception ex)
         {
             RecoverySeverity = InfoBarSeverity.Error;
             RecoveryMessage = $"Could not read the restore journal at {DefaultJournalPath}: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Describes a recovery pass, leading with whatever the user must act on.
+    /// </summary>
+    /// <remarks>
+    /// Unreadable records come first because they are the one outcome the app cannot fix: the
+    /// original values are gone, so an adapter may still be altered with no way for the app to
+    /// discover which. Everything else it either handled or will retry.
+    /// </remarks>
+    private static string DescribeRecovery(RestoreOutcome outcome)
+    {
+        var parts = new List<string>();
+
+        if (outcome.UnreadableRecords > 0)
+        {
+            parts.Add(
+                $"{outcome.UnreadableRecords} journal record" +
+                $"{(outcome.UnreadableRecords == 1 ? " was" : "s were")} damaged and could not be " +
+                "read, so the original values are lost. Check the adapters' speed, duplex, and " +
+                "offload settings by hand.");
+        }
+
+        if (outcome.Failures.Count > 0)
+        {
+            parts.Add(
+                $"Could not restore {outcome.Failures.Count} setting" +
+                $"{(outcome.Failures.Count == 1 ? "" : "s")} left by a previous run " +
+                $"({string.Join("; ", outcome.Failures)}). These are retried on the next launch.");
+        }
+
+        if (outcome.Restored.Count > 0)
+        {
+            parts.Add(
+                $"A previous run ended without restoring {outcome.Restored.Count} adapter " +
+                $"setting{(outcome.Restored.Count == 1 ? "" : "s")}. " +
+                $"Put back: {string.Join("; ", outcome.Restored)}.");
+        }
+
+        if (outcome.Abandoned.Count > 0)
+        {
+            parts.Add(
+                $"{outcome.Abandoned.Count} setting{(outcome.Abandoned.Count == 1 ? "" : "s")} " +
+                "belonged to hardware that is no longer present and " +
+                $"{(outcome.Abandoned.Count == 1 ? "was" : "were")} discarded " +
+                $"({string.Join("; ", outcome.Abandoned)}).");
+        }
+
+        return string.Join(" ", parts);
     }
 
     private async Task CheckNpcapAsync()
@@ -212,7 +283,7 @@ internal sealed partial class RigViewModel : ObservableObject
                 Adapters.Add(new AdapterCardViewModel(adapter, probed));
             }
 
-            foreach (var warning in RunSafety.Inspect(adapters))
+            foreach (var warning in RunSafety.Inspect(adapters, _unrestored))
             {
                 Warnings.Add(warning);
             }

@@ -28,17 +28,40 @@ public interface IRestoreJournal
     /// Durably records an original value. Must complete before the corresponding change is
     /// applied, and must not return until the entry survives process death.
     /// </summary>
+    /// <remarks>
+    /// An implementation must also leave the journal appendable afterwards. A record written
+    /// after an unterminated line is unreadable, so a torn write is not self-limiting: it makes
+    /// every later entry unreadable too, which turns one lost record into a journal that silently
+    /// swallows the rest of the run.
+    /// </remarks>
     Task RecordAsync(PendingRestore entry, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Every entry not yet restored, oldest first. Non-empty means a previous run did not clean
-    /// up after itself.
+    /// Everything recorded and not yet restored, oldest first, plus a count of what could not be
+    /// read. Anything other than <see cref="JournalContents.IsEmpty"/> means a previous run did
+    /// not clean up after itself.
     /// </summary>
-    Task<IReadOnlyList<PendingRestore>> ReadPendingAsync(CancellationToken cancellationToken = default);
+    Task<JournalContents> ReadPendingAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Discards the journal. Call only after every entry has actually been restored - this is
-    /// the single point where the safety net is removed.
+    /// Removes specific entries, leaving anything recorded since they were read.
     /// </summary>
-    Task ClearAsync(CancellationToken cancellationToken = default);
+    /// <remarks>
+    /// Removal is by identity rather than "delete the file", because a restore pass takes seconds
+    /// - long enough for a concurrent run to record new changes - and discarding those would
+    /// strand adapters this app had just altered. This is the single point where the safety net
+    /// comes off, so it must only ever come off the entries actually put back.
+    /// </remarks>
+    Task RemoveAsync(
+        IReadOnlyList<PendingRestore> entries, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Discards the journal wholesale, including anything unreadable.
+    /// </summary>
+    /// <remarks>
+    /// Only for a journal whose content cannot be parsed at all: nothing in it can be acted on,
+    /// and leaving it in place makes every future record unreadable as well. Prefer
+    /// <see cref="RemoveAsync"/> in every other case.
+    /// </remarks>
+    Task DiscardAsync(CancellationToken cancellationToken = default);
 }
