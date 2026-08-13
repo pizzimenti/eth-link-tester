@@ -87,6 +87,26 @@ public sealed record AdapterCapabilities
     public bool CanForce(SpeedDuplex setting) => ForceableSettings.Contains(setting);
 
     /// <summary>
+    /// True when this adapter is known <em>not</em> to support a tier, as opposed to merely
+    /// lacking evidence for it.
+    /// </summary>
+    /// <remarks>
+    /// The distinction is the whole point. A driver's fixed-setting list is authoritative only
+    /// below gigabit: 802.3 Clause 40 forbids forcing 1000BASE-T and above, so every adapter
+    /// omits those regardless of what it supports, and reading that omission as denial would rule
+    /// out the tier on hardware that runs it daily.
+    /// <para>
+    /// Below gigabit the list is trustworthy in both directions - X550-class adapters genuinely
+    /// have no 10BASE-T and say so - but only when the driver exposes speed control at all. An
+    /// empty list is silence, not a claim.
+    /// </para>
+    /// </remarks>
+    public bool RulesOut(LinkSpeed speed) =>
+        !speed.RequiresAutoNegotiation()
+        && ForceableSettings.Count > 0
+        && !ForceableSettings.Any(s => s.Speed == speed);
+
+    /// <summary>
     /// True when the driver offers a fixed setting at or above 1000BASE-T, which it cannot
     /// literally force. Present so the UI can label it as advertisement restriction honestly.
     /// </summary>

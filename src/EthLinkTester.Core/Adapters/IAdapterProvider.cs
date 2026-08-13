@@ -26,8 +26,17 @@ public interface IAdapterProvider
     Task<AdapterCapabilities> ProbeCapabilitiesAsync(
         string adapterId, CancellationToken cancellationToken = default);
 
-    /// <summary>Reads the NIC's own counters. The source of truth for loss and volume.</summary>
-    Task<AdapterCounters> ReadCountersAsync(
+    /// <summary>
+    /// Reads the NIC's own counters, or null when the adapter cannot currently be read. The
+    /// source of truth for loss and volume.
+    /// </summary>
+    /// <remarks>
+    /// Null is expected, not exceptional: a disabled adapter exposes no counters at all, and the
+    /// user can disable one at any moment - including mid-run, which is a case this app actively
+    /// invites. A polling caller should skip the sample and re-baseline rather than treat it as
+    /// an error.
+    /// </remarks>
+    Task<AdapterCounters?> ReadCountersAsync(
         string adapterId, CancellationToken cancellationToken = default);
 
     /// <summary>Frequency of the timestamps in <see cref="AdapterCounters.TimestampTicks"/>.</summary>

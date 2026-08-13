@@ -5,13 +5,16 @@ namespace EthLinkTester.Core.Tests;
 
 public class RigCapabilitiesTests
 {
-    private static NetworkAdapterInfo Adapter(string name, string description = "test adapter") => new()
+    private static NetworkAdapterInfo Adapter(
+        string name,
+        string description = "test adapter",
+        AdapterStatus status = AdapterStatus.Up) => new()
     {
         Id = name,
         Name = name,
         Description = description,
         MacAddress = "00-00-00-00-00-00",
-        Status = AdapterStatus.Up,
+        Status = status,
     };
 
     private static AdapterCapabilities Caps(
@@ -174,9 +177,28 @@ public class RigCapabilitiesTests
     }
 
     [Fact]
-    public void WarnsWhenMdiControlIsUnavailable()
+    public void WarnsWhenNeitherAdapterHasMdiControl()
     {
-        Assert.Contains(ReferenceRig().Limitations, l => l.Contains("MDI"));
+        Assert.Contains(
+            ReferenceRig().Limitations,
+            l => l.StartsWith("Neither adapter exposes MDI", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Regression: with one end able to set MDI/MDI-X the ambiguity is resolvable from that side,
+    /// which is a materially different situation from neither end being able to. Saying "neither"
+    /// when one adapter has the control is simply false, and it talks the user out of a
+    /// diagnostic they could actually run.
+    /// </summary>
+    [Fact]
+    public void NamesTheSingleAdapterLackingMdiControl()
+    {
+        var rig = RigCapabilities.Derive(
+            Adapter("has-mdi"), Caps("has-mdi", LinkSpeed.Mbps1000, TenAndHundred(), mdi: true),
+            Adapter("no-mdi"), Caps("no-mdi", LinkSpeed.Mbps1000, TenAndHundred(), mdi: false));
+
+        Assert.Contains(rig.Limitations, l => l.StartsWith("no-mdi does not expose MDI", StringComparison.Ordinal));
+        Assert.DoesNotContain(rig.Limitations, l => l.Contains("Neither adapter exposes MDI"));
     }
 
     [Fact]
@@ -203,20 +225,22 @@ public class RigCapabilitiesTests
     }
 
     /// <summary>
-    /// Regression, and the subtlest of the set: a downshifted link must not define the ceiling.
-    /// Negotiation is the thing under test, so a degraded cable would otherwise make the NIC
-    /// look like slower hardware and the gigabit test would never be scheduled - laundering the
-    /// exact fault this tool exists to find into a fixture limitation.
+    /// Regression: a downshifted link must not define the ceiling. Negotiation is the thing under
+    /// test, so a degraded cable would otherwise make the NIC look like slower hardware and turn
+    /// the exact fault this tool exists to find into a fixture limitation.
     /// </summary>
+    /// <remarks>
+    /// Both ends downshifted with no driver-reported maximum is the one case that stays genuinely
+    /// unresolvable: nothing anywhere is evidence that either NIC is faster than the 100 Mbps it
+    /// is currently running. The honest output is an unknown ceiling and an explicit caveat, not
+    /// an invented gigabit tier - and it is what the PnPDeviceID lookup table in Phase 6 exists
+    /// to resolve.
+    /// </remarks>
     [Fact]
     public void DownshiftedLinkDoesNotBecomeTheCeiling()
     {
-        // A gigabit-capable pair currently stuck at 100 Mbps by a bad cable. Neither driver
-        // reports a hardware maximum, which is the common case.
-        var downshifted = Caps("x", max: null, TenAndHundred(), negotiated: LinkSpeed.Mbps100);
-
         var rig = RigCapabilities.Derive(
-            Adapter("a"), downshifted,
+            Adapter("a"), Caps("a", max: null, TenAndHundred(), negotiated: LinkSpeed.Mbps100),
             Adapter("b"), Caps("b", max: null, TenAndHundred(), negotiated: LinkSpeed.Mbps100));
 
         // The ceiling is unknown rather than asserted as 100 Mbps...
@@ -225,5 +249,78 @@ public class RigCapabilitiesTests
         // ...and the user is told the evidence is incomplete rather than shown a hardware limit.
         Assert.Contains(rig.Limitations, l => l.Contains("maximum speed is unknown"));
         Assert.DoesNotContain(rig.Limitations, l => l.Contains("tops out at"));
+    }
+
+    /// <summary>
+    /// Regression, and the one that matters most: an end with its link down has no evidence for
+    /// gigabit - 802.3 forbids listing it as forceable and there is no negotiated speed to read -
+    /// so intersecting the two ends' evidence let that silence veto the tier outright.
+    /// </summary>
+    /// <remarks>
+    /// Reproduced on the reference rig by disabling one adapter: the Realtek still evidenced
+    /// 1000BASE-T, the Killer went silent, and the rig came back with TestableSpeeds of exactly
+    /// [10, 100]. The gigabit test was then never scheduled - which is to say the app stopped
+    /// looking for the fault at precisely the moment a cable was bad enough to cause one.
+    /// </remarks>
+    [Fact]
+    public void ASilentEndDoesNotVetoATierTheOtherEndEvidences()
+    {
+        var rig = RigCapabilities.Derive(
+            // Link down: only the sub-gigabit forceable list, which proves nothing about gigabit.
+            Adapter("Ethernet", status: AdapterStatus.Disconnected),
+            Caps("Ethernet", max: null, TenAndHundred()),
+            // Demonstrably gigabit-capable.
+            Adapter("Ethernet 2", status: AdapterStatus.Disabled),
+            Caps("Ethernet 2", max: null, [.. TenAndHundred(), SpeedDuplex.Full(LinkSpeed.Mbps1000)]));
+
+        Assert.Contains(LinkSpeed.Mbps1000, rig.TestableSpeeds);
+        Assert.Equal(
+            [LinkSpeed.Mbps10, LinkSpeed.Mbps100, LinkSpeed.Mbps1000],
+            rig.TestableSpeeds);
+    }
+
+    /// <summary>
+    /// The counterpart to the rule above: below gigabit a driver's list is authoritative in both
+    /// directions, so an end that genuinely lacks 10BASE-T still rules the tier out for the rig.
+    /// </summary>
+    [Fact]
+    public void AnEndThatGenuinelyLacksATierStillRulesItOut()
+    {
+        var rig = RigCapabilities.Derive(
+            Adapter("killer"), Caps("killer", LinkSpeed.Mbps1000, TenAndHundred(), negotiated: LinkSpeed.Mbps1000),
+            Adapter("x550"), Caps("x550", LinkSpeed.Mbps1000,
+                [new(LinkSpeed.Mbps100, DuplexMode.Full), SpeedDuplex.Full(LinkSpeed.Mbps1000)],
+                negotiated: LinkSpeed.Mbps1000));
+
+        Assert.DoesNotContain(LinkSpeed.Mbps10, rig.TestableSpeeds);
+        Assert.False(rig.SupportsLongRunProbe);
+    }
+
+    /// <summary>
+    /// An adapter that is not up cannot demonstrate what it supports, so the rig must say the
+    /// probe was partial rather than present it as a complete result.
+    /// </summary>
+    [Fact]
+    public void SaysSoWhenAnEndCouldNotBeFullyObserved()
+    {
+        var rig = RigCapabilities.Derive(
+            Adapter("up"), Caps("up", LinkSpeed.Mbps1000, TenAndHundred(), negotiated: LinkSpeed.Mbps1000),
+            Adapter("off", status: AdapterStatus.Disabled), Caps("off", max: null, TenAndHundred()));
+
+        Assert.Contains(rig.Limitations, l => l.Contains("off is disabled"));
+        Assert.DoesNotContain(rig.Limitations, l => l.Contains("up is"));
+    }
+
+    /// <summary>
+    /// A loop needs two ports. The same adapter given as both ends derives a perfectly confident
+    /// rig that cannot carry a single frame across a cable.
+    /// </summary>
+    [Fact]
+    public void RejectsTheSameAdapterAsBothEnds()
+    {
+        var adapter = Adapter("Ethernet");
+        var caps = Caps("Ethernet", LinkSpeed.Mbps1000, TenAndHundred());
+
+        Assert.Throws<ArgumentException>(() => RigCapabilities.Derive(adapter, caps, adapter, caps));
     }
 }

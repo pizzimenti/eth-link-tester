@@ -61,21 +61,24 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         string adapterId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(adapterId);
+        var instanceId = ToInstanceId(adapterId);
 
         return Task.Run(
             () =>
             {
-                var (name, negotiatedSpeed, maxSpeedBits, driverVersion) = ResolveAdapter(adapterId);
+                var (negotiatedSpeed, maxSpeedBits, driverVersion) = ResolveAdapter(instanceId);
 
                 var keywords = new List<string>();
                 var forceable = new List<SpeedDuplex>();
                 var supportsMdi = false;
                 var supportsJumbo = false;
 
-                var escaped = name.Replace("'", "''", StringComparison.Ordinal);
+                // Advanced properties key on "{guid}::*Keyword", so this is a prefix match rather
+                // than equality. The interface GUID cannot contain a WQL wildcard, so the
+                // validated id needs no further escaping.
                 foreach (var property in Query(
                     "SELECT * FROM MSFT_NetAdapterAdvancedPropertySettingData " +
-                    $"WHERE Name = '{escaped}'"))
+                    $"WHERE InstanceID LIKE '{instanceId}::%'"))
                 {
                     using (property)
                     {
@@ -120,27 +123,36 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
             cancellationToken);
     }
 
-    public Task<AdapterCounters> ReadCountersAsync(
+    public Task<AdapterCounters?> ReadCountersAsync(
         string adapterId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(adapterId);
+        var instanceId = ToInstanceId(adapterId);
 
-        return Task.Run(
+        return Task.Run<AdapterCounters?>(
             () =>
             {
-                var (name, _, _, _) = ResolveAdapter(adapterId);
-                var escaped = name.Replace("'", "''", StringComparison.Ordinal);
-
                 // Timestamp before the query so the interval never understates elapsed time,
                 // which would inflate a computed rate.
                 var timestamp = Stopwatch.GetTimestamp();
 
+                // Keyed on InstanceID, which is the interface GUID verbatim. Resolving the
+                // adapter's name first and querying on that cost a second WMI round trip - two
+                // thirds of the total - and capped a two-adapter poll near 7 Hz against a chart
+                // that wants 30.
                 using var statistics = Query(
                         "SELECT * FROM MSFT_NetAdapterStatisticsSettingData " +
-                        $"WHERE Name = '{escaped}'")
-                    .FirstOrDefault()
-                    ?? throw new InvalidOperationException(
-                        $"No statistics available for adapter '{name}'.");
+                        $"WHERE InstanceID = '{instanceId}'")
+                    .FirstOrDefault();
+
+                // A disabled adapter has no statistics instance at all - verified by disabling one
+                // and watching the instance disappear rather than zero out. That is a routine
+                // state the user can enter at any moment, so it is a null sample to skip, not an
+                // exception to crash a polling loop.
+                if (statistics is null)
+                {
+                    return null;
+                }
 
                 return new AdapterCounters
                 {
@@ -148,6 +160,8 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                     TimestampTicks = timestamp,
                     ReceivedBytes = ToLong(Prop(statistics, "ReceivedBytes")),
                     ReceivedUnicastPackets = ToLong(Prop(statistics, "ReceivedUnicastPackets")),
+                    ReceivedBroadcastPackets = ToLong(Prop(statistics, "ReceivedBroadcastPackets")),
+                    ReceivedMulticastPackets = ToLong(Prop(statistics, "ReceivedMulticastPackets")),
                     ReceivedPacketErrors = ToLong(Prop(statistics, "ReceivedPacketErrors")),
                     ReceivedDiscardedPackets = ToLong(Prop(statistics, "ReceivedDiscardedPackets")),
                     SentBytes = ToLong(Prop(statistics, "SentBytes")),
@@ -158,6 +172,24 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// Validates an adapter id and returns it in the exact form the CIM provider stores.
+    /// </summary>
+    /// <remarks>
+    /// All three NetAdapter classes key on <c>InstanceID</c>, which is the interface GUID - so
+    /// every query in this file can be built from a value that is provably a GUID and therefore
+    /// cannot carry a quote, a wildcard, or anything else meaningful to WQL. That removes the
+    /// need to escape at all, which is the point: the previous code escaped quotes SQL-style by
+    /// doubling them, and WQL rejects that outright. Renaming an adapter to something containing
+    /// an apostrophe - "Brad's NIC" - permanently broke both the capability probe and the counter
+    /// read with "Invalid query".
+    /// </remarks>
+    private static string ToInstanceId(string adapterId) =>
+        Guid.TryParse(adapterId, out var guid)
+            ? guid.ToString("B").ToUpperInvariant()
+            : throw new ArgumentException(
+                $"Adapter id '{adapterId}' is not an interface GUID.", nameof(adapterId));
 
     private static NetworkAdapterInfo ToAdapterInfo(
         ManagementBaseObject adapter, HashSet<string> defaultRouteIds)
@@ -267,21 +299,17 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                   .Cast<LinkSpeed?>()
                   .FirstOrDefault(s => s!.Value.BitsPerSecond() == bitsPerSecond);
 
-    private static (string Name, LinkSpeed? NegotiatedSpeed, long MaxSpeedBits, string? DriverVersion) ResolveAdapter(string adapterId)
+    private static (LinkSpeed? NegotiatedSpeed, long MaxSpeedBits, string? DriverVersion) ResolveAdapter(
+        string instanceId)
     {
-        var escaped = adapterId.Replace("'", "''", StringComparison.Ordinal);
-
         using var adapter = Query(
                 "SELECT * FROM MSFT_NetAdapter " +
-                $"WHERE InterfaceGuid = '{escaped}' AND {PhysicalEthernetFilter}")
+                $"WHERE InstanceID = '{instanceId}' AND {PhysicalEthernetFilter}")
             .FirstOrDefault()
-            ?? throw new InvalidOperationException($"No physical Ethernet adapter with id '{adapterId}'.");
-
-        var negotiated = ToLinkSpeed(ToLong(Prop(adapter, "Speed")));
+            ?? throw new InvalidOperationException($"No physical Ethernet adapter with id '{instanceId}'.");
 
         return (
-            Prop(adapter, "Name") as string ?? throw new InvalidOperationException("Adapter has no name."),
-            negotiated,
+            ToLinkSpeed(ToLong(Prop(adapter, "Speed"))),
             ToLong(Prop(adapter, "MaxSpeed")),
             Prop(adapter, "DriverVersionString") as string);
     }
@@ -341,9 +369,32 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         using var searcher = new ManagementObjectSearcher(
             new ManagementScope(Namespace), new ObjectQuery(query));
 
-        return [.. searcher.Get().Cast<ManagementObject>()];
+        // The collection holds an unmanaged enumerator and must be disposed in its own right;
+        // leaving it to the finalizer leaked a handle and ~7 KB per call, which a 30 Hz poll
+        // turns into real growth.
+        using var results = searcher.Get();
+
+        return [.. results.Cast<ManagementObject>()];
     }
 
-    private static long ToLong(object? value) =>
-        value is null ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    /// <summary>
+    /// Reads a CIM integer, treating anything that will not fit in a signed 64-bit value as
+    /// unknown.
+    /// </summary>
+    /// <remarks>
+    /// Every counter and speed on this provider is <c>UInt64</c>, so a value above
+    /// <see cref="long.MaxValue"/> is representable by the source and not by the destination.
+    /// NDIS defines <c>NDIS_LINK_SPEED_UNKNOWN</c> as 0xFFFFFFFFFFFFFFFF for exactly the case
+    /// this app cares about - a link that is down - and <see cref="Convert.ToInt64(object?)"/>
+    /// throws on it. On the reference hardware the property comes back null instead, so this is a
+    /// guard against drivers not yet seen rather than an observed failure; the cost of being
+    /// wrong is that adapter enumeration throws for every adapter on the machine.
+    /// Zero is the right answer because callers already read it as "unknown".
+    /// </remarks>
+    private static long ToLong(object? value) => value switch
+    {
+        null => 0,
+        ulong tooLarge when tooLarge > long.MaxValue => 0,
+        _ => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+    };
 }

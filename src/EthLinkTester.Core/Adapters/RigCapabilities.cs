@@ -68,11 +68,27 @@ public sealed record RigCapabilities
         ArgumentNullException.ThrowIfNull(secondAdapter);
         ArgumentNullException.ThrowIfNull(secondCapabilities);
 
+        // A loop needs two ports. One adapter passed twice would derive a perfectly confident rig
+        // that cannot carry a single frame across a cable.
+        if (string.Equals(firstAdapter.Id, secondAdapter.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"A rig needs two distinct adapters; '{firstAdapter.Name}' was given as both ends.",
+                nameof(secondAdapter));
+        }
+
         var ceiling = MutualMaximum(firstCapabilities.MaximumSpeed, secondCapabilities.MaximumSpeed);
 
-        // Evidence from both ends, intersected. Never "everything below the ceiling".
+        // Tiers either end has evidence for, minus any tier an end positively rules out.
+        //
+        // The union is deliberate and was a real bug as an intersection. An adapter with its link
+        // down has no evidence for gigabit - 802.3 forbids listing it as forceable, and there is
+        // no negotiated speed to read - so intersecting let that silence veto the tier outright.
+        // The rig then reported "10/100 only" and never scheduled 1000BASE-T, which is to say it
+        // stopped looking for the fault precisely when a cable was bad enough to cause one.
         var testable = firstCapabilities.SupportedSpeeds
-            .Where(secondCapabilities.SupportedSpeeds.Contains)
+            .Union(secondCapabilities.SupportedSpeeds)
+            .Where(s => !firstCapabilities.RulesOut(s) && !secondCapabilities.RulesOut(s))
             .Where(s => ceiling is null || s <= ceiling.Value)
             .Order()
             .ToArray();
@@ -111,6 +127,22 @@ public sealed record RigCapabilities
         SpeedDuplex[] advertisementOnly)
     {
         var limitations = new List<string>();
+        var ends = new[]
+        {
+            (Adapter: firstAdapter, Capabilities: firstCapabilities),
+            (Adapter: secondAdapter, Capabilities: secondCapabilities),
+        };
+
+        // An adapter that is not up cannot demonstrate what it supports, so the evidence behind
+        // every figure here is thinner than it looks. Say so rather than presenting a partial
+        // probe as a complete one.
+        foreach (var (adapter, _) in ends.Where(e => e.Adapter.Status != AdapterStatus.Up))
+        {
+            limitations.Add(
+                $"{adapter.Name} is {adapter.Status.ToString().ToLowerInvariant()}, so its " +
+                "capabilities could not be fully observed. Tiers it neither demonstrates nor " +
+                "rules out are still listed as testable.");
+        }
 
         if (ceiling is null)
         {
@@ -149,12 +181,23 @@ public sealed record RigCapabilities
                 "observed if auto-negotiation happens to select it.");
         }
 
-        if (!firstCapabilities.SupportsMdiControl || !secondCapabilities.SupportsMdiControl)
+        var withoutMdi = ends.Where(e => !e.Capabilities.SupportsMdiControl)
+                             .Select(e => e.Adapter.Name)
+                             .ToArray();
+
+        if (withoutMdi.Length > 0)
         {
+            // Naming the end that lacks the control matters: with one adapter able to set MDI/MDI-X
+            // the ambiguity is resolvable from that side, which is a materially different situation
+            // from neither end being able to.
+            var subject = withoutMdi.Length == ends.Length
+                ? "Neither adapter exposes"
+                : $"{withoutMdi[0]} does not expose";
+
             limitations.Add(
-                "Neither adapter exposes MDI/MDI-X control. A forced 10 or 100 test that fails " +
-                "to link on a direct straight-through cable is most likely an MDI artifact " +
-                "rather than a cable fault, and is reported as a caveat.");
+                $"{subject} MDI/MDI-X control. A forced 10 or 100 test that fails to link on a " +
+                "direct straight-through cable is most likely an MDI artifact rather than a " +
+                "cable fault, and is reported as a caveat.");
         }
 
         return limitations;
