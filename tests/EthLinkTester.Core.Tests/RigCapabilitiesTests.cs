@@ -189,4 +189,41 @@ public class RigCapabilitiesTests
             [LinkSpeed.Mbps10, LinkSpeed.Mbps100, LinkSpeed.Mbps1000],
             killer.SupportedSpeeds);
     }
+
+    /// <summary>
+    /// Regression: a driver-reported maximum is evidence of support in its own right. Omitting
+    /// it would leave a tier the hardware advertises out of the testable set.
+    /// </summary>
+    [Fact]
+    public void SupportedSpeedsIncludeTheReportedMaximum()
+    {
+        var caps = Caps("a", LinkSpeed.Mbps2500, [SpeedDuplex.Full(LinkSpeed.Mbps100)]);
+
+        Assert.Contains(LinkSpeed.Mbps2500, caps.SupportedSpeeds);
+    }
+
+    /// <summary>
+    /// Regression, and the subtlest of the set: a downshifted link must not define the ceiling.
+    /// Negotiation is the thing under test, so a degraded cable would otherwise make the NIC
+    /// look like slower hardware and the gigabit test would never be scheduled - laundering the
+    /// exact fault this tool exists to find into a fixture limitation.
+    /// </summary>
+    [Fact]
+    public void DownshiftedLinkDoesNotBecomeTheCeiling()
+    {
+        // A gigabit-capable pair currently stuck at 100 Mbps by a bad cable. Neither driver
+        // reports a hardware maximum, which is the common case.
+        var downshifted = Caps("x", max: null, TenAndHundred(), negotiated: LinkSpeed.Mbps100);
+
+        var rig = RigCapabilities.Derive(
+            Adapter("a"), downshifted,
+            Adapter("b"), Caps("b", max: null, TenAndHundred(), negotiated: LinkSpeed.Mbps100));
+
+        // The ceiling is unknown rather than asserted as 100 Mbps...
+        Assert.Null(rig.MaximumMutualSpeed);
+
+        // ...and the user is told the evidence is incomplete rather than shown a hardware limit.
+        Assert.Contains(rig.Limitations, l => l.Contains("maximum speed is unknown"));
+        Assert.DoesNotContain(rig.Limitations, l => l.Contains("tops out at"));
+    }
 }

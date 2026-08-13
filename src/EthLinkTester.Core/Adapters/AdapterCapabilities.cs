@@ -49,7 +49,8 @@ public sealed record AdapterCapabilities
     public IReadOnlyList<LinkSpeed> SupportedSpeeds =>
     [
         .. ForceableSettings.Select(s => s.Speed)
-            .Concat(NegotiatedSpeed is null ? [] : new[] { NegotiatedSpeed.Value })
+            .Concat(NegotiatedSpeed is null ? [] : [NegotiatedSpeed.Value])
+            .Concat(MaximumSpeed is null ? [] : [MaximumSpeed.Value])
             .Distinct()
             .Order()
     ];

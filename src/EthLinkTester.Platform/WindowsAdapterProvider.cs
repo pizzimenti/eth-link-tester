@@ -109,7 +109,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 {
                     AdapterId = adapterId,
                     ForceableSettings = forceable,
-                    MaximumSpeed = MaximumSpeed(maxSpeedBits, negotiatedSpeed),
+                    MaximumSpeed = MaximumSpeed(maxSpeedBits),
                     NegotiatedSpeed = negotiatedSpeed,
                     SupportsMdiControl = supportsMdi,
                     SupportsJumboFrames = supportsJumbo,
@@ -163,6 +163,19 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         ManagementBaseObject adapter, HashSet<string> defaultRouteIds)
     {
         var id = Prop(adapter, "InterfaceGuid") as string ?? string.Empty;
+        var status = ToStatus(adapter);
+
+        // Duplex is only meaningful on a live link. A disconnected adapter reports nothing
+        // useful, and defaulting that to Half would invent a half-duplex finding - which is a
+        // genuine fault signature - out of an adapter that is merely unplugged.
+        var duplex = status == AdapterStatus.Up
+            ? Prop(adapter, "FullDuplex") switch
+            {
+                true => DuplexMode.Full,
+                false => DuplexMode.Half,
+                _ => DuplexMode.Unknown,
+            }
+            : DuplexMode.Unknown;
 
         return new NetworkAdapterInfo
         {
@@ -170,9 +183,9 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
             Name = Prop(adapter, "Name") as string ?? "(unnamed)",
             Description = Prop(adapter, "InterfaceDescription") as string ?? string.Empty,
             MacAddress = FormatMac(Prop(adapter, "PermanentAddress") as string),
-            Status = ToStatus(adapter),
+            Status = status,
             LinkSpeedBitsPerSecond = ToLong(Prop(adapter, "Speed")),
-            Duplex = Prop(adapter, "FullDuplex") is true ? DuplexMode.Full : DuplexMode.Half,
+            Duplex = duplex,
             BusType = ToBusType(Prop(adapter, "PnPDeviceID") as string),
             CarriesDefaultRoute = defaultRouteIds.Contains(id),
         };
@@ -232,8 +245,20 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
     /// the link down there is no evidence and null is the honest result.
     /// </para>
     /// </remarks>
-    private static LinkSpeed? MaximumSpeed(long maxSpeedBits, LinkSpeed? negotiated) =>
-        ToLinkSpeed(maxSpeedBits) ?? negotiated;
+    /// <remarks>
+    /// Notably it does <b>not</b> fall back to the negotiated speed. Negotiation is the thing
+    /// under test: a degraded cable causes a low negotiation, so treating the observed rate as
+    /// the hardware maximum would let a bad cable masquerade as slower hardware. The reference
+    /// Killer E2400 sat at 100 Mbps on a gigabit port for exactly this reason - reading that as
+    /// a 100BASE-T ceiling would drop the rig to 100, skip the gigabit test, and report a
+    /// fixture limitation instead of the cable fault it actually was.
+    /// <para>
+    /// A hardware-ID lookup table keyed on PnPDeviceID (PCI\VEN_1969&amp;DEV_E0A1,
+    /// USB\VID_0BDA&amp;PID_8153) is the intended fallback and lands with grading in Phase 6.
+    /// Until then, unknown is the honest answer.
+    /// </para>
+    /// </remarks>
+    private static LinkSpeed? MaximumSpeed(long maxSpeedBits) => ToLinkSpeed(maxSpeedBits);
 
     private static LinkSpeed? ToLinkSpeed(long bitsPerSecond) =>
         bitsPerSecond <= 0

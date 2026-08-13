@@ -115,8 +115,9 @@ public sealed record RigCapabilities
         if (ceiling is null)
         {
             limitations.Add(
-                "The rig's maximum speed is unknown because at least one adapter is not linked. " +
-                "Connect both ends to determine what this fixture can reach.");
+                "The rig's maximum speed is unknown: at least one driver does not report a " +
+                "hardware maximum. Tiers listed as testable come from observed evidence, so a " +
+                "faster tier may exist that has not been demonstrated.");
         }
         else if (ceiling.Value < LinkSpeed.Mbps10000)
         {

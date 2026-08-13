@@ -94,9 +94,21 @@ public sealed record CounterDelta
     public double SentMegabitsPerSecond => Seconds <= 0 ? 0 : SentBytes * 8 / 1_000_000.0 / Seconds;
 
     /// <summary>
-    /// Observed frame error ratio, or null when no frames arrived. Null rather than zero on
-    /// purpose: "no errors in no traffic" is not evidence of a good link.
+    /// Observed frame error ratio, or null when nothing arrived at all.
     /// </summary>
+    /// <remarks>
+    /// The denominator is every frame the PHY saw - delivered plus errored - because
+    /// <see cref="ReceivedPackets"/> counts only frames that arrived intact. Dividing by the
+    /// successes alone understates the rate, and does so worst exactly when the link is worst:
+    /// a link where every frame errors would report an infinite ratio over a zero denominator
+    /// rather than 100%.
+    /// <para>
+    /// Null rather than zero when nothing arrived. "No errors in no traffic" is not evidence of
+    /// a good link.
+    /// </para>
+    /// </remarks>
     public double? ReceivedErrorRatio =>
-        ReceivedPackets <= 0 ? null : ReceivedErrors / (double)ReceivedPackets;
+        ReceivedPackets + ReceivedErrors <= 0
+            ? null
+            : ReceivedErrors / (double)(ReceivedPackets + ReceivedErrors);
 }
