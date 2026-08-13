@@ -43,6 +43,8 @@
     -->
     <PackageVersion Include="Microsoft.Management.Infrastructure" Version="3.0.0" />
     <PackageVersion Include="Microsoft.Management.Infrastructure.Runtime.Win" Version="3.0.0" />
+    <!-- Npcap preflight: proves the capture driver is loaded, not merely installed. -->
+    <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup Label="Storage and reporting">

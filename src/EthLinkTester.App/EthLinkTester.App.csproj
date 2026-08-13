@@ -44,6 +44,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EthLinkTester.Core\EthLinkTester.Core.csproj" />
+    <!-- The Rig page reads real adapters, so the app needs the Windows implementations. -->
+    <ProjectReference Include="..\EthLinkTester.Platform\EthLinkTester.Platform.csproj" />
   </ItemGroup>
 
 </Project>

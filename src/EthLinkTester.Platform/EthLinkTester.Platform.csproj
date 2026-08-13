@@ -12,6 +12,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Management.Infrastructure" />
     <PackageReference Include="Microsoft.Management.Infrastructure.Runtime.Win" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" />
   </ItemGroup>
 
   <ItemGroup>
