@@ -19,7 +19,7 @@ namespace EthLinkTester.App.ViewModels;
 /// obligations are discharged on launch: recover any adapter settings a previous run left behind,
 /// and say plainly whether live testing is possible at all.
 /// </remarks>
-internal sealed partial class RigViewModel : ObservableObject
+internal sealed partial class RigViewModel : ObservableObject, IDisposable
 {
     private readonly IAdapterProvider _provider;
     private readonly IAdapterConfigurator _configurator;
@@ -36,15 +36,21 @@ internal sealed partial class RigViewModel : ObservableObject
     /// </remarks>
     private IReadOnlyList<PendingRestore> _unrestored = [];
 
+    /// <summary>Non-null only when this view model created the journal, and so must dispose it.</summary>
+    private readonly FileRestoreJournal? _ownedJournal;
+
     public RigViewModel()
-        : this(
-            new WindowsAdapterProvider(),
-            new GuardedAdapterConfigurator(
-                new WindowsAdapterPropertyWriter(),
-                new FileRestoreJournal(DefaultJournalPath)),
-            new WindowsNpcapProbe())
+        : this(new WindowsAdapterProvider(), new FileRestoreJournal(DefaultJournalPath), new WindowsNpcapProbe())
     {
     }
+
+    /// <summary>
+    /// Takes the journal rather than a configurator so ownership is explicit: it holds a named
+    /// mutex, and the page that creates one is the only thing that can dispose it.
+    /// </summary>
+    private RigViewModel(IAdapterProvider provider, FileRestoreJournal journal, INpcapProbe npcap)
+        : this(provider, new GuardedAdapterConfigurator(new WindowsAdapterPropertyWriter(), journal), npcap) =>
+        _ownedJournal = journal;
 
     public RigViewModel(
         IAdapterProvider provider,
@@ -64,6 +70,8 @@ internal sealed partial class RigViewModel : ObservableObject
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "EthLinkTester",
         "pending-restore.json");
+
+    public void Dispose() => _ownedJournal?.Dispose();
 
     public ObservableCollection<AdapterCardViewModel> Adapters { get; } = [];
 
@@ -327,9 +335,7 @@ internal sealed partial class RigViewModel : ObservableObject
         var rig = RigCapabilities.Derive(adapters[0], capabilities[0]!, adapters[1], capabilities[1]!);
 
         RigIsComplete = true;
-        RigSummary =
-            $"{AdapterNickname.From(adapters[0].Description, adapters[0].Name)} ↔ " +
-            $"{AdapterNickname.From(adapters[1].Description, adapters[1].Name)}";
+        RigSummary = $"{Adapters[0].Nickname} ↔ {Adapters[1].Nickname}";
         TestableSpeeds = string.Join(", ", rig.TestableSpeeds.Select(s => s.ShortName()));
         Ceiling = rig.MaximumMutualSpeed?.StandardName() ?? "Unknown";
         ForceableSettings = rig.ForceableSettings.Count == 0

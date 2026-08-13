@@ -55,6 +55,9 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     /// <summary>The journal's location, for recovery messages.</summary>
     public string Path => _path;
 
+    /// <summary>Where a rewrite stages its output before replacing the journal.</summary>
+    private string TemporaryPath => _path + ".tmp";
+
     public Task RecordAsync(PendingRestore entry, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(entry);
@@ -127,8 +130,33 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         }
 
         _disposed = true;
+
+        // Wait for work already in flight. Disposing underneath it made its ReleaseMutex throw,
+        // so a record that had been written durably was reported to the caller as a failed
+        // journal write - which skips the adapter change and leaves a phantom entry that alarms
+        // the next launch about a run that never happened.
+        try
+        {
+            if (_mutex.WaitOne(DisposeDrainTimeout))
+            {
+                _mutex.ReleaseMutex();
+            }
+        }
+        catch (AbandonedMutexException)
+        {
+            _mutex.ReleaseMutex();
+        }
+
         _mutex.Dispose();
     }
+
+    private static readonly TimeSpan AcquirePollInterval = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// How long disposal waits for in-flight work. Bounded because a cross-process holder must not
+    /// be able to hang shutdown; an operation that outlives it is left to the abandoned-mutex path.
+    /// </summary>
+    private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// A mutex name derived from the journal's full path, so two instances pointed at the same
@@ -167,6 +195,21 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
 
         var entries = new List<PendingRestore>();
         var unreadable = 0;
+        var torn = EndsMidRecord();
+        var lineNumber = 0;
+        var lastLine = 0;
+
+        // Counted first so the final line can be recognised while reading.
+        using (var counter = new StreamReader(
+            new FileStream(
+                _path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete),
+            Encoding.UTF8))
+        {
+            while (counter.ReadLine() is not null)
+            {
+                lastLine++;
+            }
+        }
 
         using var reader = new StreamReader(
             new FileStream(
@@ -176,6 +219,8 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         while (reader.ReadLine() is { } line)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            lineNumber++;
 
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -198,15 +243,44 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
             }
             catch (JsonException)
             {
-                // A torn write leaves a partial line. Skipping it keeps every intact entry
-                // recoverable; counting it is what lets the caller tell "nothing was recorded"
-                // from "nothing survived", which demand opposite responses.
+                // A record that did not finish writing is not corruption: it is journaled before
+                // its adapter change is applied, so an incomplete one describes a change that
+                // never happened. Only a complete line that will not parse means an original
+                // value is genuinely lost, and only that warrants alarming anyone.
+                if (torn && lineNumber == lastLine)
+                {
+                    continue;
+                }
+
                 unreadable++;
             }
         }
 
-        return new JournalContents { Entries = entries, UnreadableLines = unreadable };
+        return new JournalContents
+        {
+            Entries = entries,
+            UnreadableLines = unreadable,
+            HasTornFinalLine = torn,
+        };
     }
+
+    /// <summary>Whether the file ends without a record terminator.</summary>
+    private bool EndsMidRecord()
+    {
+        using var stream = new FileStream(
+            _path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+        if (stream.Length == 0)
+        {
+            return false;
+        }
+
+        stream.Seek(-1, SeekOrigin.End);
+        return stream.ReadByte() != Terminator;
+    }
+
+    /// <summary>The byte that ends a complete record.</summary>
+    private const byte Terminator = (byte)'\n';
 
     /// <summary>
     /// Drops a trailing partial line so the next append starts on a fresh record.
@@ -224,8 +298,12 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
             return;
         }
 
+        // Shares as widely as Append does. Demanding exclusivity here turned a tolerated
+        // condition - anyone holding the journal open, including the user inspecting the path the
+        // recovery message shows them - into a hard IOException on the next record. The mutex
+        // provides exclusion; the share mode does not need to.
         using var stream = new FileStream(
-            _path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            _path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
 
         if (stream.Length == 0)
         {
@@ -255,7 +333,7 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     /// </summary>
     private void Rewrite(IReadOnlyList<PendingRestore> entries)
     {
-        var temporary = _path + ".tmp";
+        var temporary = TemporaryPath;
 
         using (var stream = new FileStream(
             temporary,
@@ -276,11 +354,30 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         File.Move(temporary, _path, overwrite: true);
     }
 
+    /// <summary>
+    /// Removes the journal and any rewrite temporary.
+    /// </summary>
+    /// <remarks>
+    /// The temporary matters: a crash mid-rewrite leaves a sibling holding a full copy of the
+    /// journal, and nothing else ever removes it. An unheld one is harmlessly overwritten by the
+    /// next rewrite, but anything holding it - antivirus, a backup agent - makes every future
+    /// removal fail.
+    /// </remarks>
     private void Delete()
     {
-        if (File.Exists(_path))
+        foreach (var path in new[] { _path, TemporaryPath })
         {
-            File.Delete(_path);
+            if (File.Exists(path))
+            {
+                try
+                {
+                    File.Delete(path);
+                }
+                catch (IOException) when (path == TemporaryPath)
+                {
+                    // A held temporary must not prevent the journal itself from being cleared.
+                }
+            }
         }
     }
 
@@ -302,13 +399,7 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         Task.Run(
             () =>
             {
-                try
-                {
-                    _mutex.WaitOne();
-                }
-                catch (AbandonedMutexException)
-                {
-                }
+                Acquire(cancellationToken);
 
                 try
                 {
@@ -322,6 +413,37 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
             cancellationToken);
 
     /// <summary>Void-returning overload. Task&lt;object?&gt; is a Task, so callers return it directly.</summary>
+    /// <summary>
+    /// Takes the lock, remaining answerable to cancellation while it waits.
+    /// </summary>
+    /// <remarks>
+    /// A bare WaitOne is uncancellable, so a journal blocked behind another process stayed blocked
+    /// for as long as that process held it - passing the token to Task.Run only prevents
+    /// scheduling, never interrupts a body already running.
+    /// </remarks>
+    private void Acquire(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (_mutex.WaitOne(AcquirePollInterval))
+                {
+                    return;
+                }
+            }
+            catch (AbandonedMutexException)
+            {
+                // Another process died holding it - exactly the crash this journal is built for.
+                // Ownership transfers here, and the file needs no rollback: it is append-only and
+                // every reader tolerates a torn final line.
+                return;
+            }
+        }
+    }
+
     private Task<object?> WithLockAsync(Action operation, CancellationToken cancellationToken) =>
         WithLockAsync<object?>(
             () =>

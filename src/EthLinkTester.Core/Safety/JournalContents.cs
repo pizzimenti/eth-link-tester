@@ -15,13 +15,31 @@ public sealed record JournalContents
 {
     public required IReadOnlyList<PendingRestore> Entries { get; init; }
 
-    /// <summary>Lines present in the file that could not be parsed.</summary>
+    /// <summary>
+    /// Complete lines that could not be parsed, meaning original values are genuinely lost.
+    /// </summary>
+    /// <remarks>
+    /// Excludes a torn final line - see <see cref="HasTornFinalLine"/> - because the two mean
+    /// opposite things and only this one warrants alarming the user.
+    /// </remarks>
     public required int UnreadableLines { get; init; }
 
-    /// <summary>True when the file held content but none of it could be understood.</summary>
+    /// <summary>
+    /// Whether the file ends mid-record, which is benign.
+    /// </summary>
+    /// <remarks>
+    /// A record is journaled <em>before</em> its adapter change is applied, so a write that did
+    /// not finish describes a change that never happened. Nothing is lost and there is nothing to
+    /// restore. Counting it as corruption raised a red "the original values are lost, check your
+    /// adapters by hand" alarm for the most ordinary crash there is, which contradicts the
+    /// reasoning the repair itself is built on.
+    /// </remarks>
+    public bool HasTornFinalLine { get; init; }
+
+    /// <summary>True when the file held complete records but none of them could be understood.</summary>
     public bool IsUnreadable => Entries.Count == 0 && UnreadableLines > 0;
 
-    /// <summary>True when there is genuinely nothing recorded - the normal startup case.</summary>
+    /// <summary>True when there is nothing recorded to act on - the normal startup case.</summary>
     public bool IsEmpty => Entries.Count == 0 && UnreadableLines == 0;
 
     public static JournalContents Empty { get; } = new() { Entries = [], UnreadableLines = 0 };

@@ -15,8 +15,6 @@ public static class WellKnownKeywords
 
     public const string JumboPacket = "*JumboPacket";
 
-    public const string FlowControl = "*FlowControl";
-
     /// <summary>
     /// Whether a keyword is the vendor's MDI/MDI-X control.
     /// </summary>

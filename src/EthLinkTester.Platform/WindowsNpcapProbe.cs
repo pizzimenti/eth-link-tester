@@ -141,8 +141,24 @@ public sealed class WindowsNpcapProbe : INpcapProbe
             case string text:
                 return text.Equals("true", StringComparison.OrdinalIgnoreCase)
                     || text.Equals("yes", StringComparison.OrdinalIgnoreCase);
+            case long number:
+                return number != 0;
             case byte[] { Length: > 0 } bytes:
                 return bytes[0] != 0;
+            // REG_MULTI_SZ and anything else numeric-ish. Falling through to the file heuristic
+            // instead would report "not in compatibility mode" for a machine that is, which is
+            // the dangerous direction for a state this app calls unusable.
+            case IConvertible convertible:
+                try
+                {
+                    return convertible.ToInt64(CultureInfo.InvariantCulture) != 0;
+                }
+                catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
+                {
+                    break;
+                }
+            case string[] { Length: > 0 } lines:
+                return lines[0] is not ("0" or "");
         }
 
         return File.Exists(Path.Combine(

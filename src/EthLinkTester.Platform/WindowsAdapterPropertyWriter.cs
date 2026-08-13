@@ -88,7 +88,7 @@ public sealed class WindowsAdapterPropertyWriter : IAdapterPropertyWriter
         }
 
         return anyProperty.Count == 0
-            ? new AdapterNotFoundException(adapterId)
+            ? AdapterNotFoundException.ForAdapter(adapterId)
             : new InvalidOperationException(
                 $"Adapter '{adapterId}' has no advanced property '{keyword}'.");
     }

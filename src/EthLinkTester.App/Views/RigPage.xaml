@@ -14,7 +14,10 @@
                     <TextBlock Text="Rig" Style="{StaticResource TitleTextBlockStyle}" />
                     <TextBlock Text="{x:Bind ViewModel.RigSummary, Mode=OneWay}"
                                Style="{StaticResource BodyTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextTrimming="CharacterEllipsis"
+                               MaxLines="1"
+                               MaxWidth="640" />
                 </StackPanel>
 
                 <Button Command="{x:Bind ViewModel.RefreshCommand}"
@@ -80,8 +83,17 @@
                                     -->
                                     <FontIcon Glyph="{x:Bind StatusGlyph}" FontSize="16"
                                               VerticalAlignment="Center" />
+                                    <!--
+                                      Trimmed because an unrecognised description falls back to
+                                      its full text, and vendor strings run to hundreds of
+                                      characters. The full text is on the line below regardless.
+                                    -->
                                     <TextBlock Text="{x:Bind Nickname}"
-                                               Style="{StaticResource SubtitleTextBlockStyle}" />
+                                               Style="{StaticResource SubtitleTextBlockStyle}"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxLines="1"
+                                               MaxWidth="300"
+                                               ToolTipService.ToolTip="{x:Bind Description}" />
                                     <!--
                                       Windows' own name for the connection. Every other tool on the
                                       machine identifies the port this way, so dropping it would

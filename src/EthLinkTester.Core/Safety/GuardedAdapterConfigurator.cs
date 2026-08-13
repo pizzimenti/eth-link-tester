@@ -137,10 +137,12 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
                 restored.Add(entry);
             }
-            catch (AdapterNotFoundException)
+            catch (Exception ex) when (ex is AdapterNotFoundException or ArgumentException)
             {
-                // Retrying cannot help - the hardware is gone. Keeping the entry would fail on
-                // every launch forever and show an alarm the user has no way to clear.
+                // Retrying cannot help. The hardware is gone, or the entry names an adapter that
+                // cannot even be addressed - a malformed id passes JSON validation but no write
+                // built from it can ever succeed. Either way, keeping it would fail on every
+                // launch forever and show an alarm the user has no way to clear.
                 abandoned.Add(entry);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -163,13 +165,19 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
             await _journal.RemoveAsync(resolvedEntries, cancellationToken).ConfigureAwait(false);
         }
 
+        // Read back rather than inferring. "Nothing failed" is not the same as "the journal is
+        // empty": an entry recorded by a concurrent run during this pass survives removal by
+        // design, and reporting the journal as clear while it still holds one would claim the
+        // safety net is gone when it is not.
+        var afterwards = await _journal.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
+
         return new RestoreOutcome
         {
             Restored = restored,
             Failures = failures,
             Abandoned = abandoned,
             UnreadableRecords = pending.UnreadableLines,
-            JournalCleared = failures.Count == 0,
+            JournalCleared = afterwards.IsEmpty,
         };
     }
 

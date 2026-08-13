@@ -34,6 +34,12 @@ public class GuardedAdapterConfiguratorTests
         /// <summary>Keywords whose adapter is to look permanently gone rather than merely broken.</summary>
         public HashSet<string> MissingAdapterFor { get; } = [];
 
+        /// <summary>Keywords whose adapter id cannot be addressed at all.</summary>
+        public HashSet<string> UnusableIdFor { get; } = [];
+
+        /// <summary>Simulates a concurrent run appending while a restore pass is under way.</summary>
+        public bool RecordDuringRestore { get; set; }
+
         /// <summary>Set to make the journal itself fail, which must stop the adapter write.</summary>
         public bool JournalIsBroken { get; set; }
 
@@ -82,6 +88,11 @@ public class GuardedAdapterConfiguratorTests
                 throw new AdapterNotFoundException(adapterId);
             }
 
+            if (UnusableIdFor.Contains(keyword))
+            {
+                throw new ArgumentException($"Adapter id '{adapterId}' is not an interface GUID.");
+            }
+
             if (FailWritesFor.Contains(keyword))
             {
                 throw new InvalidOperationException("driver refused the write");
@@ -117,6 +128,19 @@ public class GuardedAdapterConfiguratorTests
             foreach (var entry in entries)
             {
                 Entries.Remove(entry);
+            }
+
+            if (RecordDuringRestore)
+            {
+                RecordDuringRestore = false;
+                Entries.Add(new PendingRestore
+                {
+                    AdapterId = "adapter",
+                    AdapterName = "Ethernet",
+                    PropertyKeyword = "*FlowControl",
+                    OriginalValue = "3",
+                    RecordedUtc = DateTimeOffset.UnixEpoch,
+                });
             }
 
             Cleared = Entries.Count == 0;
@@ -230,6 +254,67 @@ public class GuardedAdapterConfiguratorTests
         await configurator.RestoreAllAsync();
 
         Assert.Equal("0", rig.Values[Keyword]);
+    }
+
+    /// <summary>
+    /// Regression, and the one branch of the restore path that had no test at all: a property
+    /// forced twice leaves two journal entries, and removing only the one written back leaves the
+    /// later one behind. The next launch would treat that leftover - a value this app itself set -
+    /// as the original, making the intermediate setting permanent.
+    /// </summary>
+    [Fact]
+    public async Task RestoringAPropertyForcedTwiceRemovesEveryEntryForIt()
+    {
+        var (rig, configurator) = Build();
+        var adapter = Adapter();
+
+        await configurator.ApplyAsync(adapter, Keyword, "4");   // auto -> 100 Full
+        await configurator.ApplyAsync(adapter, Keyword, "2");   // 100 Full -> 10 Full
+        Assert.Equal(2, rig.Entries.Count);
+
+        await configurator.RestoreAllAsync();
+
+        Assert.Equal("0", rig.Values[Keyword]);
+        Assert.Empty(rig.Entries);
+    }
+
+    /// <summary>
+    /// An entry recorded by a concurrent run during the pass survives removal by design, so the
+    /// journal is not clear - and saying it is would claim the safety net is gone while it is
+    /// still holding a setting nobody has put back.
+    /// </summary>
+    [Fact]
+    public async Task DoesNotClaimTheJournalIsClearWhileAnEntryRemains()
+    {
+        var (rig, configurator) = Build();
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+
+        // Recorded after the pass read the journal, as a concurrent run would.
+        rig.RecordDuringRestore = true;
+
+        var outcome = await configurator.RestoreAllAsync();
+
+        Assert.Single(outcome.Restored);
+        Assert.False(outcome.JournalCleared);
+        Assert.NotEmpty(rig.Entries);
+    }
+
+    /// <summary>
+    /// An entry naming an adapter that cannot even be addressed can never be restored, so it must
+    /// be abandoned like vanished hardware rather than retried on every launch forever.
+    /// </summary>
+    [Fact]
+    public async Task AnEntryWithAnUnusableAdapterIdIsAbandoned()
+    {
+        var (rig, configurator) = Build();
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+        rig.UnusableIdFor.Add(Keyword);
+
+        var outcome = await configurator.RestoreAllAsync();
+
+        Assert.Empty(outcome.Failures);
+        Assert.Single(outcome.Abandoned);
+        Assert.True(outcome.JournalCleared);
     }
 
     /// <summary>
