@@ -10,7 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Management" />
+    <PackageReference Include="Microsoft.Management.Infrastructure" />
+    <PackageReference Include="Microsoft.Management.Infrastructure.Runtime.Win" />
   </ItemGroup>
 
   <ItemGroup>

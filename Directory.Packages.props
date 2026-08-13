@@ -28,7 +28,21 @@
   <ItemGroup Label="Platform interop">
     <!-- Source-generated P/Invoke for NDIS DeviceIoControl and friends. -->
     <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.298" />
-    <PackageVersion Include="System.Management" Version="10.0.11" />
+    <!--
+      MI, not System.Management. root\StandardCimv2 is an MI-hosted provider: reads work through
+      the legacy WMI COM API but ModifyInstance does not, failing with "Object or property already
+      exists" and then "Invalid parameter" whatever PutType is supplied. MI is the API
+      Set-CimInstance itself wraps, and writing adapter properties is the whole point of Phase 2.
+    -->
+    <!--
+      3.0.0 rather than 4.0.0, and both halves pinned together. The API package carries only
+      reference assemblies; the native implementation lives in Runtime.Win, without which
+      CimSession.Create throws FileNotFoundException for
+      Microsoft.Management.Infrastructure.Native at runtime while compiling perfectly. Runtime.Win
+      stops at 3.0.0, so 4.0.0 of the API package has no matching implementation to pair with.
+    -->
+    <PackageVersion Include="Microsoft.Management.Infrastructure" Version="3.0.0" />
+    <PackageVersion Include="Microsoft.Management.Infrastructure.Runtime.Win" Version="3.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="Storage and reporting">

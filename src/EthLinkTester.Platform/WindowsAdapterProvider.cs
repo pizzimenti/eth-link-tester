@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Management;
+using Microsoft.Management.Infrastructure;
 using System.Net.NetworkInformation;
 using EthLinkTester.Core;
 using EthLinkTester.Core.Adapters;
@@ -18,21 +18,8 @@ namespace EthLinkTester.Platform;
 /// </remarks>
 public sealed class WindowsAdapterProvider : IAdapterProvider
 {
-    private const string Namespace = @"\\.\root\StandardCimv2";
-
-    /// <summary>NdisPhysicalMedium value for 802.3. Wi-Fi is 9, tunnels 0, Bluetooth 10.</summary>
-    private const string Ndis8023 = "14";
-
     private const int AdminStatusDown = 2;
     private const int MediaConnected = 1;
-
-    /// <summary>
-    /// Physical Ethernet only. Excludes tunnels, WAN miniports, Wi-Fi Direct pseudo-adapters and
-    /// the kernel debug adapter, all of which are present on a typical machine and none of which
-    /// can carry a cable test.
-    /// </summary>
-    private const string PhysicalEthernetFilter =
-        "HardwareInterface = TRUE AND Virtual = FALSE AND NdisPhysicalMedium = " + Ndis8023;
 
     public long TimestampFrequency => Stopwatch.Frequency;
 
@@ -44,7 +31,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 var defaultRouteIds = DefaultRouteInterfaceIds();
 
                 var adapters = new List<NetworkAdapterInfo>();
-                foreach (var adapter in Query($"SELECT * FROM MSFT_NetAdapter WHERE {PhysicalEthernetFilter}"))
+                foreach (var adapter in Cim.Query($"SELECT * FROM MSFT_NetAdapter WHERE {Cim.PhysicalEthernetFilter}"))
                 {
                     using (adapter)
                     {
@@ -61,7 +48,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         string adapterId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(adapterId);
-        var instanceId = ToInstanceId(adapterId);
+        var instanceId = Cim.ToInstanceId(adapterId);
 
         return Task.Run(
             () =>
@@ -76,7 +63,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 // Advanced properties key on "{guid}::*Keyword", so this is a prefix match rather
                 // than equality. The interface GUID cannot contain a WQL wildcard, so the
                 // validated id needs no further escaping.
-                foreach (var property in Query(
+                foreach (var property in Cim.Query(
                     "SELECT * FROM MSFT_NetAdapterAdvancedPropertySettingData " +
                     $"WHERE InstanceID LIKE '{instanceId}::%'"))
                 {
@@ -84,7 +71,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
-                        var keyword = Prop(property, "RegistryKeyword") as string;
+                        var keyword = Cim.Prop(property, "RegistryKeyword") as string;
                         if (string.IsNullOrEmpty(keyword))
                         {
                             continue;
@@ -95,7 +82,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                         if (keyword.Equals("*SpeedDuplex", StringComparison.OrdinalIgnoreCase))
                         {
                             forceable.AddRange(
-                                SpeedDuplexParser.ParseAll(Prop(property, "ValidDisplayValues") as string[]));
+                                SpeedDuplexParser.ParseAll(Cim.Prop(property, "ValidDisplayValues") as string[]));
                         }
                         else if (keyword.Contains("MDI", StringComparison.OrdinalIgnoreCase))
                         {
@@ -127,7 +114,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         string adapterId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(adapterId);
-        var instanceId = ToInstanceId(adapterId);
+        var instanceId = Cim.ToInstanceId(adapterId);
 
         return Task.Run<AdapterCounters?>(
             () =>
@@ -140,7 +127,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 // adapter's name first and querying on that cost a second WMI round trip - two
                 // thirds of the total - and capped a two-adapter poll near 7 Hz against a chart
                 // that wants 30.
-                using var statistics = Query(
+                using var statistics = Cim.Query(
                         "SELECT * FROM MSFT_NetAdapterStatisticsSettingData " +
                         $"WHERE InstanceID = '{instanceId}'")
                     .FirstOrDefault();
@@ -158,50 +145,32 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 {
                     AdapterId = adapterId,
                     TimestampTicks = timestamp,
-                    ReceivedBytes = ToLong(Prop(statistics, "ReceivedBytes")),
-                    ReceivedUnicastPackets = ToLong(Prop(statistics, "ReceivedUnicastPackets")),
-                    ReceivedBroadcastPackets = ToLong(Prop(statistics, "ReceivedBroadcastPackets")),
-                    ReceivedMulticastPackets = ToLong(Prop(statistics, "ReceivedMulticastPackets")),
-                    ReceivedPacketErrors = ToLong(Prop(statistics, "ReceivedPacketErrors")),
-                    ReceivedDiscardedPackets = ToLong(Prop(statistics, "ReceivedDiscardedPackets")),
-                    SentBytes = ToLong(Prop(statistics, "SentBytes")),
-                    SentUnicastPackets = ToLong(Prop(statistics, "SentUnicastPackets")),
-                    OutboundPacketErrors = ToLong(Prop(statistics, "OutboundPacketErrors")),
-                    OutboundDiscardedPackets = ToLong(Prop(statistics, "OutboundDiscardedPackets")),
+                    ReceivedBytes = Cim.ToLong(Cim.Prop(statistics, "ReceivedBytes")),
+                    ReceivedUnicastPackets = Cim.ToLong(Cim.Prop(statistics, "ReceivedUnicastPackets")),
+                    ReceivedBroadcastPackets = Cim.ToLong(Cim.Prop(statistics, "ReceivedBroadcastPackets")),
+                    ReceivedMulticastPackets = Cim.ToLong(Cim.Prop(statistics, "ReceivedMulticastPackets")),
+                    ReceivedPacketErrors = Cim.ToLong(Cim.Prop(statistics, "ReceivedPacketErrors")),
+                    ReceivedDiscardedPackets = Cim.ToLong(Cim.Prop(statistics, "ReceivedDiscardedPackets")),
+                    SentBytes = Cim.ToLong(Cim.Prop(statistics, "SentBytes")),
+                    SentUnicastPackets = Cim.ToLong(Cim.Prop(statistics, "SentUnicastPackets")),
+                    OutboundPacketErrors = Cim.ToLong(Cim.Prop(statistics, "OutboundPacketErrors")),
+                    OutboundDiscardedPackets = Cim.ToLong(Cim.Prop(statistics, "OutboundDiscardedPackets")),
                 };
             },
             cancellationToken);
     }
 
-    /// <summary>
-    /// Validates an adapter id and returns it in the exact form the CIM provider stores.
-    /// </summary>
-    /// <remarks>
-    /// All three NetAdapter classes key on <c>InstanceID</c>, which is the interface GUID - so
-    /// every query in this file can be built from a value that is provably a GUID and therefore
-    /// cannot carry a quote, a wildcard, or anything else meaningful to WQL. That removes the
-    /// need to escape at all, which is the point: the previous code escaped quotes SQL-style by
-    /// doubling them, and WQL rejects that outright. Renaming an adapter to something containing
-    /// an apostrophe - "Brad's NIC" - permanently broke both the capability probe and the counter
-    /// read with "Invalid query".
-    /// </remarks>
-    private static string ToInstanceId(string adapterId) =>
-        Guid.TryParse(adapterId, out var guid)
-            ? guid.ToString("B").ToUpperInvariant()
-            : throw new ArgumentException(
-                $"Adapter id '{adapterId}' is not an interface GUID.", nameof(adapterId));
-
     private static NetworkAdapterInfo ToAdapterInfo(
-        ManagementBaseObject adapter, HashSet<string> defaultRouteIds)
+        CimInstance adapter, HashSet<string> defaultRouteIds)
     {
-        var id = Prop(adapter, "InterfaceGuid") as string ?? string.Empty;
+        var id = Cim.Prop(adapter, "InterfaceGuid") as string ?? string.Empty;
         var status = ToStatus(adapter);
 
         // Duplex is only meaningful on a live link. A disconnected adapter reports nothing
         // useful, and defaulting that to Half would invent a half-duplex finding - which is a
         // genuine fault signature - out of an adapter that is merely unplugged.
         var duplex = status == AdapterStatus.Up
-            ? Prop(adapter, "FullDuplex") switch
+            ? Cim.Prop(adapter, "FullDuplex") switch
             {
                 true => DuplexMode.Full,
                 false => DuplexMode.Half,
@@ -212,13 +181,13 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         return new NetworkAdapterInfo
         {
             Id = id,
-            Name = Prop(adapter, "Name") as string ?? "(unnamed)",
-            Description = Prop(adapter, "InterfaceDescription") as string ?? string.Empty,
-            MacAddress = FormatMac(Prop(adapter, "PermanentAddress") as string),
+            Name = Cim.Prop(adapter, "Name") as string ?? "(unnamed)",
+            Description = Cim.Prop(adapter, "InterfaceDescription") as string ?? string.Empty,
+            MacAddress = FormatMac(Cim.Prop(adapter, "PermanentAddress") as string),
             Status = status,
-            LinkSpeedBitsPerSecond = ToLong(Prop(adapter, "Speed")),
+            LinkSpeedBitsPerSecond = Cim.ToLong(Cim.Prop(adapter, "Speed")),
             Duplex = duplex,
-            BusType = ToBusType(Prop(adapter, "PnPDeviceID") as string),
+            BusType = ToBusType(Cim.Prop(adapter, "PnPDeviceID") as string),
             CarriesDefaultRoute = defaultRouteIds.Contains(id),
         };
     }
@@ -227,14 +196,14 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
     /// Administratively disabled is distinct from unplugged, and conflating them would send the
     /// user hunting for a cable fault when the adapter is simply switched off.
     /// </summary>
-    private static AdapterStatus ToStatus(ManagementBaseObject adapter)
+    private static AdapterStatus ToStatus(CimInstance adapter)
     {
-        if (ToLong(Prop(adapter, "InterfaceAdminStatus")) == AdminStatusDown)
+        if (Cim.ToLong(Cim.Prop(adapter, "InterfaceAdminStatus")) == AdminStatusDown)
         {
             return AdapterStatus.Disabled;
         }
 
-        return ToLong(Prop(adapter, "MediaConnectState")) == MediaConnected
+        return Cim.ToLong(Cim.Prop(adapter, "MediaConnectState")) == MediaConnected
             ? AdapterStatus.Up
             : AdapterStatus.Disconnected;
     }
@@ -302,16 +271,16 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
     private static (LinkSpeed? NegotiatedSpeed, long MaxSpeedBits, string? DriverVersion) ResolveAdapter(
         string instanceId)
     {
-        using var adapter = Query(
+        using var adapter = Cim.Query(
                 "SELECT * FROM MSFT_NetAdapter " +
-                $"WHERE InstanceID = '{instanceId}' AND {PhysicalEthernetFilter}")
+                $"WHERE InstanceID = '{instanceId}' AND {Cim.PhysicalEthernetFilter}")
             .FirstOrDefault()
             ?? throw new InvalidOperationException($"No physical Ethernet adapter with id '{instanceId}'.");
 
         return (
-            ToLinkSpeed(ToLong(Prop(adapter, "Speed"))),
-            ToLong(Prop(adapter, "MaxSpeed")),
-            Prop(adapter, "DriverVersionString") as string);
+            ToLinkSpeed(Cim.ToLong(Cim.Prop(adapter, "Speed"))),
+            Cim.ToLong(Cim.Prop(adapter, "MaxSpeed")),
+            Cim.Prop(adapter, "DriverVersionString") as string);
     }
 
     /// <summary>
@@ -340,61 +309,4 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
 
         return ids;
     }
-
-    /// <summary>
-    /// Reads a CIM property, returning null when the provider does not expose it.
-    /// </summary>
-    /// <remarks>
-    /// Indexing a <see cref="ManagementBaseObject"/> for an absent property throws rather than
-    /// returning null, and the property set genuinely varies across Windows builds and NIC
-    /// drivers. Discovered the hard way: <c>MSFT_NetAdapter</c> has no <c>DriverVersion</c> - the
-    /// real name is <c>DriverVersionString</c>, and PowerShell's Get-NetAdapter synthesises the
-    /// friendlier one. Throwing here would crash the app on hardware we have never seen, so a
-    /// missing property degrades to "unknown" instead.
-    /// </remarks>
-    private static object? Prop(ManagementBaseObject source, string name)
-    {
-        try
-        {
-            return source[name];
-        }
-        catch (ManagementException)
-        {
-            return null;
-        }
-    }
-
-    private static List<ManagementObject> Query(string query)
-    {
-        using var searcher = new ManagementObjectSearcher(
-            new ManagementScope(Namespace), new ObjectQuery(query));
-
-        // The collection holds an unmanaged enumerator and must be disposed in its own right;
-        // leaving it to the finalizer leaked a handle and ~7 KB per call, which a 30 Hz poll
-        // turns into real growth.
-        using var results = searcher.Get();
-
-        return [.. results.Cast<ManagementObject>()];
-    }
-
-    /// <summary>
-    /// Reads a CIM integer, treating anything that will not fit in a signed 64-bit value as
-    /// unknown.
-    /// </summary>
-    /// <remarks>
-    /// Every counter and speed on this provider is <c>UInt64</c>, so a value above
-    /// <see cref="long.MaxValue"/> is representable by the source and not by the destination.
-    /// NDIS defines <c>NDIS_LINK_SPEED_UNKNOWN</c> as 0xFFFFFFFFFFFFFFFF for exactly the case
-    /// this app cares about - a link that is down - and <see cref="Convert.ToInt64(object?)"/>
-    /// throws on it. On the reference hardware the property comes back null instead, so this is a
-    /// guard against drivers not yet seen rather than an observed failure; the cost of being
-    /// wrong is that adapter enumeration throws for every adapter on the machine.
-    /// Zero is the right answer because callers already read it as "unknown".
-    /// </remarks>
-    private static long ToLong(object? value) => value switch
-    {
-        null => 0,
-        ulong tooLarge when tooLarge > long.MaxValue => 0,
-        _ => Convert.ToInt64(value, CultureInfo.InvariantCulture),
-    };
 }
