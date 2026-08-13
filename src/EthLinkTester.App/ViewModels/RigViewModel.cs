@@ -327,7 +327,9 @@ internal sealed partial class RigViewModel : ObservableObject
         var rig = RigCapabilities.Derive(adapters[0], capabilities[0]!, adapters[1], capabilities[1]!);
 
         RigIsComplete = true;
-        RigSummary = $"{adapters[0].Name} ↔ {adapters[1].Name}";
+        RigSummary =
+            $"{AdapterNickname.From(adapters[0].Description, adapters[0].Name)} ↔ " +
+            $"{AdapterNickname.From(adapters[1].Description, adapters[1].Name)}";
         TestableSpeeds = string.Join(", ", rig.TestableSpeeds.Select(s => s.ShortName()));
         Ceiling = rig.MaximumMutualSpeed?.StandardName() ?? "Unknown";
         ForceableSettings = rig.ForceableSettings.Count == 0

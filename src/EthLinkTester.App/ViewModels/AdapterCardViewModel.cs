@@ -17,7 +17,21 @@ internal sealed class AdapterCardViewModel(NetworkAdapterInfo adapter, AdapterCa
 {
     public NetworkAdapterInfo Adapter { get; } = adapter;
 
-    public string Name => Adapter.Name;
+    /// <summary>
+    /// The hardware, short enough to be a heading: "Killer E2400" rather than "Ethernet".
+    /// </summary>
+    public string Nickname => AdapterNickname.From(Adapter.Description, Adapter.Name);
+
+    /// <summary>
+    /// Windows' own name for the connection, kept visible on purpose.
+    /// </summary>
+    /// <remarks>
+    /// Every other tool the user might reach for - Network Connections, Device Manager,
+    /// Get-NetAdapter, netsh - identifies the port by this name. Showing only the hardware
+    /// nickname would make the app the one place that cannot be cross-referenced with the rest of
+    /// the machine, which is the opposite of helpful when someone is chasing a fault.
+    /// </remarks>
+    public string ConnectionName => Adapter.Name;
 
     public string Description => Adapter.Description;
 
