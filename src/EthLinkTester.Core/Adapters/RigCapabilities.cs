@@ -4,31 +4,56 @@ namespace EthLinkTester.Core.Adapters;
 /// What a specific pair of adapters can actually test.
 /// </summary>
 /// <remarks>
-/// The test matrix is derived from probed hardware, never hardcoded. A rig made of two gigabit
-/// adapters cannot exercise 2.5GBASE-T no matter what the app supports, and showing the user a
-/// greyed-out 10G row they can never reach is worse than not showing it: it implies the result
-/// is a coverage gap in the cable rather than in the fixture.
+/// The test matrix is derived from probed hardware, never hardcoded and never inferred. A rig of
+/// two gigabit adapters cannot exercise 2.5GBASE-T no matter what the app supports, and showing
+/// a tier the fixture cannot reach implies the result is a gap in the cable rather than in the
+/// rig.
 /// </remarks>
 public sealed record RigCapabilities
 {
-    /// <summary>Speeds both adapters can reach, ascending.</summary>
+    /// <summary>
+    /// Speeds both adapters have positive evidence of supporting, ascending.
+    /// </summary>
+    /// <remarks>
+    /// Derived from evidence, not from a ceiling. A maximum does not imply every tier beneath
+    /// it - X550-class adapters reach 10 Gbps and have no 10BASE-T whatsoever - so inferring
+    /// downwards would schedule tests the hardware cannot run.
+    /// </remarks>
     public required IReadOnlyList<LinkSpeed> TestableSpeeds { get; init; }
 
     /// <summary>
-    /// Settings that can be pinned on <em>both</em> ends. Forcing one end alone does not pin the
-    /// link - the far end keeps negotiating and the two disagree.
+    /// Settings that can genuinely be pinned on <em>both</em> ends with negotiation off.
     /// </summary>
+    /// <remarks>
+    /// Two filters apply. Forcing one end alone does not pin the link, so both adapters must
+    /// offer the setting. And 802.3 Clause 40 forbids disabling negotiation at 1000BASE-T and
+    /// above, so those never appear here however the driver presents them - see
+    /// <see cref="AdvertisementRestrictedSettings"/>.
+    /// </remarks>
     public required IReadOnlyList<SpeedDuplex> ForceableSettings { get; init; }
 
-    /// <summary>Highest tier the pair can negotiate; the ceiling for every measurement.</summary>
+    /// <summary>
+    /// Settings both drivers offer that look fixed but only restrict advertised capability;
+    /// negotiation still runs underneath. Kept separate so the UI never calls them forcing.
+    /// </summary>
+    public IReadOnlyList<SpeedDuplex> AdvertisementRestrictedSettings { get; init; } = [];
+
+    /// <summary>
+    /// Highest tier the pair can negotiate, or null when either end's maximum is unknown.
+    /// </summary>
+    /// <remarks>
+    /// Null propagates deliberately. If one adapter has no capability evidence - typically
+    /// because its link is down - claiming the pair reaches the other adapter's maximum would
+    /// assert something about hardware nobody has observed.
+    /// </remarks>
     public LinkSpeed? MaximumMutualSpeed { get; init; }
 
     /// <summary>True when both ends do 10BASE-T, enabling the out-of-spec reachability probe.</summary>
     public bool SupportsLongRunProbe { get; init; }
 
     /// <summary>
-    /// Plain-language caveats to surface in the UI and stamp on reports, so a narrow rig is never
-    /// mistaken for a complete result.
+    /// Plain-language caveats to surface in the UI and stamp on reports, so a narrow rig is
+    /// never mistaken for a complete result.
     /// </summary>
     public IReadOnlyList<string> Limitations { get; init; } = [];
 
@@ -43,33 +68,77 @@ public sealed record RigCapabilities
         ArgumentNullException.ThrowIfNull(secondAdapter);
         ArgumentNullException.ThrowIfNull(secondCapabilities);
 
-        var ceiling = MinimumOf(firstCapabilities.MaximumSpeed, secondCapabilities.MaximumSpeed);
+        var ceiling = MutualMaximum(firstCapabilities.MaximumSpeed, secondCapabilities.MaximumSpeed);
 
-        var testable = ceiling is null
-            ? []
-            : Enum.GetValues<LinkSpeed>().Where(s => s <= ceiling.Value).Order().ToArray();
+        // Evidence from both ends, intersected. Never "everything below the ceiling".
+        var testable = firstCapabilities.SupportedSpeeds
+            .Where(secondCapabilities.SupportedSpeeds.Contains)
+            .Where(s => ceiling is null || s <= ceiling.Value)
+            .Order()
+            .ToArray();
 
-        // A setting is only forceable for the rig when both ends offer it.
-        var forceable = firstCapabilities.ForceableSettings
+        var mutuallyOffered = firstCapabilities.ForceableSettings
             .Where(secondCapabilities.ForceableSettings.Contains)
             .Order(SpeedDuplexOrder.Instance)
             .ToArray();
 
+        var forceable = mutuallyOffered.Where(s => s.IsTrulyForceable).ToArray();
+        var advertisementOnly = mutuallyOffered.Where(s => !s.IsTrulyForceable).ToArray();
+
+        var limitations = BuildLimitations(
+            firstAdapter, firstCapabilities,
+            secondAdapter, secondCapabilities,
+            ceiling, forceable, advertisementOnly);
+
+        return new RigCapabilities
+        {
+            TestableSpeeds = testable,
+            ForceableSettings = forceable,
+            AdvertisementRestrictedSettings = advertisementOnly,
+            MaximumMutualSpeed = ceiling,
+            SupportsLongRunProbe = testable.Contains(LinkSpeed.Mbps10),
+            Limitations = limitations,
+        };
+    }
+
+    private static List<string> BuildLimitations(
+        NetworkAdapterInfo firstAdapter,
+        AdapterCapabilities firstCapabilities,
+        NetworkAdapterInfo secondAdapter,
+        AdapterCapabilities secondCapabilities,
+        LinkSpeed? ceiling,
+        SpeedDuplex[] forceable,
+        SpeedDuplex[] advertisementOnly)
+    {
         var limitations = new List<string>();
 
-        if (ceiling is not null && ceiling.Value < LinkSpeed.Mbps10000)
+        if (ceiling is null)
+        {
+            limitations.Add(
+                "The rig's maximum speed is unknown because at least one adapter is not linked. " +
+                "Connect both ends to determine what this fixture can reach.");
+        }
+        else if (ceiling.Value < LinkSpeed.Mbps10000)
         {
             limitations.Add(
                 $"This rig tops out at {ceiling.Value.StandardName()}. Tiers above it are not " +
                 "a gap in the cable and are not reported.");
+
+            var slower = Slower(firstAdapter, firstCapabilities, secondAdapter, secondCapabilities);
+            if (slower is not null)
+            {
+                limitations.Add($"Ceiling is set by {slower.Name} ({slower.Description}).");
+            }
         }
 
-        // The ceiling is set by whichever adapter is slower, and naming it saves the user
-        // wondering which half of the fixture to upgrade.
-        var slower = Slower(firstAdapter, firstCapabilities, secondAdapter, secondCapabilities);
-        if (slower is not null)
+        if (advertisementOnly.Length > 0)
         {
-            limitations.Add($"Ceiling is set by {slower.Name} ({slower.Description}).");
+            limitations.Add(
+                "Both drivers offer " +
+                string.Join(", ", advertisementOnly) +
+                " as a fixed setting, but 802.3 requires auto-negotiation at those rates. These " +
+                "restrict advertised capability rather than pinning the link, and are not used " +
+                "as forced-speed tests.");
         }
 
         if (!forceable.Any(s => s.Speed == LinkSpeed.Mbps100))
@@ -87,35 +156,16 @@ public sealed record RigCapabilities
                 "rather than a cable fault, and is reported as a caveat.");
         }
 
-        var longRun = firstCapabilities.ForceableSettings.Any(s => s.Speed == LinkSpeed.Mbps10)
-                      && secondCapabilities.ForceableSettings.Any(s => s.Speed == LinkSpeed.Mbps10);
-
-        if (!longRun)
-        {
-            limitations.Add(
-                "10BASE-T is unavailable on this rig, so the long-run reachability probe cannot " +
-                "run. Cables too long to link at 100 Mbps will report as dead rather than as long.");
-        }
-
-        return new RigCapabilities
-        {
-            TestableSpeeds = testable,
-            ForceableSettings = forceable,
-            MaximumMutualSpeed = ceiling,
-            SupportsLongRunProbe = longRun,
-            Limitations = limitations,
-        };
+        return limitations;
     }
 
-    private static LinkSpeed? MinimumOf(LinkSpeed? first, LinkSpeed? second)
-    {
-        if (first is null)
-        {
-            return second;
-        }
-
-        return second is null ? first : (LinkSpeed)Math.Min((int)first.Value, (int)second.Value);
-    }
+    /// <summary>
+    /// The lower of two maxima, or null when either is unknown.
+    /// </summary>
+    private static LinkSpeed? MutualMaximum(LinkSpeed? first, LinkSpeed? second) =>
+        first is null || second is null
+            ? null
+            : (LinkSpeed)Math.Min((int)first.Value, (int)second.Value);
 
     private static NetworkAdapterInfo? Slower(
         NetworkAdapterInfo firstAdapter,
@@ -123,12 +173,9 @@ public sealed record RigCapabilities
         NetworkAdapterInfo secondAdapter,
         AdapterCapabilities secondCapabilities)
     {
-        if (firstCapabilities.MaximumSpeed is null || secondCapabilities.MaximumSpeed is null)
-        {
-            return null;
-        }
-
-        if (firstCapabilities.MaximumSpeed == secondCapabilities.MaximumSpeed)
+        if (firstCapabilities.MaximumSpeed is null
+            || secondCapabilities.MaximumSpeed is null
+            || firstCapabilities.MaximumSpeed == secondCapabilities.MaximumSpeed)
         {
             return null;
         }

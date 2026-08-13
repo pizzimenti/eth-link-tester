@@ -16,12 +16,14 @@ public class RigCapabilitiesTests
 
     private static AdapterCapabilities Caps(
         string id,
-        LinkSpeed max,
+        LinkSpeed? max,
         IEnumerable<SpeedDuplex> forceable,
+        LinkSpeed? negotiated = null,
         bool mdi = false) => new()
         {
             AdapterId = id,
             MaximumSpeed = max,
+            NegotiatedSpeed = negotiated,
             ForceableSettings = [.. forceable],
             SupportsMdiControl = mdi,
         };
@@ -36,15 +38,17 @@ public class RigCapabilitiesTests
     ];
 
     /// <summary>
-    /// The actual reference rig: an onboard Killer E2400 that offers only 10 and 100, paired
-    /// with a Realtek USB adapter that additionally offers a fixed 1 Gbps setting.
+    /// The actual reference rig: an onboard Killer E2400 offering only 10 and 100, paired with a
+    /// Realtek USB adapter that additionally offers a fixed 1 Gbps setting. Both linked at
+    /// 1000BASE-T.
     /// </summary>
     private static RigCapabilities ReferenceRig() => RigCapabilities.Derive(
         Adapter("Ethernet", "Killer E2400 Gigabit Ethernet Controller"),
-        Caps("Ethernet", LinkSpeed.Mbps1000, TenAndHundred()),
+        Caps("Ethernet", LinkSpeed.Mbps1000, TenAndHundred(), negotiated: LinkSpeed.Mbps1000),
         Adapter("Ethernet 2", "Realtek USB GbE Family Controller"),
         Caps("Ethernet 2", LinkSpeed.Mbps1000,
-            [.. TenAndHundred(), SpeedDuplex.Full(LinkSpeed.Mbps1000)]));
+            [.. TenAndHundred(), SpeedDuplex.Full(LinkSpeed.Mbps1000)],
+            negotiated: LinkSpeed.Mbps1000));
 
     [Fact]
     public void CeilingIsTheSlowerAdaptersMaximum()
@@ -57,19 +61,74 @@ public class RigCapabilitiesTests
     }
 
     [Fact]
-    public void TestableSpeedsStopAtTheCeiling()
+    public void TestableSpeedsComeFromEvidenceOnBothEnds()
     {
-        var rig = ReferenceRig();
-
         Assert.Equal(
             [LinkSpeed.Mbps10, LinkSpeed.Mbps100, LinkSpeed.Mbps1000],
-            rig.TestableSpeeds);
+            ReferenceRig().TestableSpeeds);
     }
 
     /// <summary>
-    /// Forcing one end alone does not pin the link - the far end keeps negotiating. So a setting
-    /// only counts as forceable for the rig when both adapters offer it, which on the reference
-    /// rig excludes the Realtek's 1 Gbps entry.
+    /// Regression: a ceiling does not imply every tier beneath it. X550-class adapters reach
+    /// 10 Gbps and have no 10BASE-T at all, so inferring downwards would schedule a tier the
+    /// hardware cannot run.
+    /// </summary>
+    [Fact]
+    public void DoesNotInferTiersBelowTheCeiling()
+    {
+        SpeedDuplex[] tenGigNoTenMegabit =
+        [
+            new(LinkSpeed.Mbps100, DuplexMode.Full),
+            SpeedDuplex.Full(LinkSpeed.Mbps1000),
+            SpeedDuplex.Full(LinkSpeed.Mbps10000),
+        ];
+
+        var rig = RigCapabilities.Derive(
+            Adapter("a"), Caps("a", LinkSpeed.Mbps10000, tenGigNoTenMegabit, negotiated: LinkSpeed.Mbps10000),
+            Adapter("b"), Caps("b", LinkSpeed.Mbps10000, tenGigNoTenMegabit, negotiated: LinkSpeed.Mbps10000));
+
+        Assert.DoesNotContain(LinkSpeed.Mbps10, rig.TestableSpeeds);
+        Assert.False(rig.SupportsLongRunProbe);
+    }
+
+    /// <summary>
+    /// Regression: with one adapter's maximum unknown - typically because its link is down -
+    /// claiming the pair reaches the other's maximum asserts something nobody has observed.
+    /// </summary>
+    [Fact]
+    public void CeilingIsUnknownWhenEitherEndIsUnknown()
+    {
+        var rig = RigCapabilities.Derive(
+            Adapter("linked"), Caps("linked", LinkSpeed.Mbps10000, [], negotiated: LinkSpeed.Mbps10000),
+            Adapter("down"), Caps("down", max: null, TenAndHundred()));
+
+        Assert.Null(rig.MaximumMutualSpeed);
+        Assert.Contains(rig.Limitations, l => l.Contains("maximum speed is unknown"));
+    }
+
+    /// <summary>
+    /// Regression: a setting 802.3 forbids forcing must never appear as forceable, even when
+    /// both drivers offer it. Two Realtek-style adapters would otherwise present an
+    /// advertisement restriction as genuine pinning.
+    /// </summary>
+    [Fact]
+    public void AdvertisementRestrictionsAreNotForceable()
+    {
+        var bothOfferGigabit = new[] { SpeedDuplex.Full(LinkSpeed.Mbps1000) }.Concat(TenAndHundred());
+
+        var rig = RigCapabilities.Derive(
+            Adapter("a"), Caps("a", LinkSpeed.Mbps1000, bothOfferGigabit, negotiated: LinkSpeed.Mbps1000),
+            Adapter("b"), Caps("b", LinkSpeed.Mbps1000, bothOfferGigabit, negotiated: LinkSpeed.Mbps1000));
+
+        Assert.DoesNotContain(SpeedDuplex.Full(LinkSpeed.Mbps1000), rig.ForceableSettings);
+        Assert.Contains(SpeedDuplex.Full(LinkSpeed.Mbps1000), rig.AdvertisementRestrictedSettings);
+        Assert.Contains(rig.Limitations, l => l.Contains("restrict advertised capability"));
+    }
+
+    /// <summary>
+    /// Forcing one end alone does not pin the link, so a setting only counts when both offer it.
+    /// On the reference rig that excludes the Realtek's gigabit entry twice over - once for not
+    /// being mutual, once for not being truly forceable.
     /// </summary>
     [Fact]
     public void ForceableRequiresBothEndsToOfferTheSetting()
@@ -78,7 +137,8 @@ public class RigCapabilitiesTests
 
         Assert.Equal(4, rig.ForceableSettings.Count);
         Assert.DoesNotContain(SpeedDuplex.Full(LinkSpeed.Mbps1000), rig.ForceableSettings);
-        Assert.Contains(new SpeedDuplex(LinkSpeed.Mbps100, DuplexMode.Full), rig.ForceableSettings);
+        Assert.Empty(rig.AdvertisementRestrictedSettings);
+        Assert.All(rig.ForceableSettings, s => Assert.True(s.IsTrulyForceable));
     }
 
     [Fact]
@@ -87,11 +147,10 @@ public class RigCapabilitiesTests
         Assert.True(ReferenceRig().SupportsLongRunProbe);
 
         var noTenMegabit = RigCapabilities.Derive(
-            Adapter("a"), Caps("a", LinkSpeed.Mbps10000, [SpeedDuplex.Full(LinkSpeed.Mbps100)]),
-            Adapter("b"), Caps("b", LinkSpeed.Mbps10000, [SpeedDuplex.Full(LinkSpeed.Mbps100)]));
+            Adapter("a"), Caps("a", LinkSpeed.Mbps100, [SpeedDuplex.Full(LinkSpeed.Mbps100)]),
+            Adapter("b"), Caps("b", LinkSpeed.Mbps100, [SpeedDuplex.Full(LinkSpeed.Mbps100)]));
 
         Assert.False(noTenMegabit.SupportsLongRunProbe);
-        Assert.Contains(noTenMegabit.Limitations, l => l.Contains("10BASE-T is unavailable"));
     }
 
     [Fact]
@@ -114,10 +173,6 @@ public class RigCapabilitiesTests
         Assert.DoesNotContain(rig.Limitations, l => l.Contains("tops out at"));
     }
 
-    /// <summary>
-    /// Without MDI control a forced-speed link failure cannot be blamed on the cable, so the rig
-    /// must say so rather than let the report imply a fault.
-    /// </summary>
     [Fact]
     public void WarnsWhenMdiControlIsUnavailable()
     {
@@ -125,14 +180,13 @@ public class RigCapabilitiesTests
     }
 
     [Fact]
-    public void ForcedGigabitIsReportedAsAdvertisementRestrictionNotForcing()
+    public void SupportedSpeedsCombineForceableAndNegotiatedEvidence()
     {
-        var realtek = Caps("Ethernet 2", LinkSpeed.Mbps1000,
-            [.. TenAndHundred(), SpeedDuplex.Full(LinkSpeed.Mbps1000)]);
+        // The Killer cannot force gigabit but is observably running it.
+        var killer = Caps("k", LinkSpeed.Mbps1000, TenAndHundred(), negotiated: LinkSpeed.Mbps1000);
 
-        // The driver offers it, but 802.3 Clause 40 means it cannot literally be forced.
-        Assert.True(realtek.OffersAdvertisementRestriction);
-        Assert.False(SpeedDuplex.Full(LinkSpeed.Mbps1000).IsTrulyForceable);
-        Assert.True(new SpeedDuplex(LinkSpeed.Mbps100, DuplexMode.Full).IsTrulyForceable);
+        Assert.Equal(
+            [LinkSpeed.Mbps10, LinkSpeed.Mbps100, LinkSpeed.Mbps1000],
+            killer.SupportedSpeeds);
     }
 }

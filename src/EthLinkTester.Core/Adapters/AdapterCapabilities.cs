@@ -18,8 +18,41 @@ public sealed record AdapterCapabilities
     /// </summary>
     public required IReadOnlyList<SpeedDuplex> ForceableSettings { get; init; }
 
-    /// <summary>Highest tier the adapter can reach, whether or not it can be forced.</summary>
+    /// <summary>
+    /// Highest tier the adapter can reach, or null when that is genuinely unknown.
+    /// </summary>
+    /// <remarks>
+    /// Null is a real and common answer, not a failure. There is no dependable maximum-speed
+    /// property - <c>MSFT_NetAdapter.MaxSpeed</c> is empty on the reference hardware - so with
+    /// the link down there is no evidence at all. It must never be inferred from
+    /// <see cref="ForceableSettings"/>: 802.3 forbids forcing gigabit and above, so a gigabit
+    /// adapter legitimately lists nothing above 100 Mbps. Treating that as a ceiling would
+    /// suppress the 1 Gbps test on a disconnected adapter and blame the fixture for what is
+    /// actually a cable fault.
+    /// </remarks>
     public LinkSpeed? MaximumSpeed { get; init; }
+
+    /// <summary>
+    /// The tier this adapter was last observed negotiating, when known. Positive evidence of
+    /// support for a speed the forceable list cannot show.
+    /// </summary>
+    public LinkSpeed? NegotiatedSpeed { get; init; }
+
+    /// <summary>
+    /// Tiers there is positive evidence this adapter supports.
+    /// </summary>
+    /// <remarks>
+    /// Evidence only, never inference. A maximum does not imply every tier beneath it: X550-class
+    /// adapters reach 10 Gbps and have no 10BASE-T at all, so deriving support from a ceiling
+    /// would schedule a tier the hardware cannot do.
+    /// </remarks>
+    public IReadOnlyList<LinkSpeed> SupportedSpeeds =>
+    [
+        .. ForceableSettings.Select(s => s.Speed)
+            .Concat(NegotiatedSpeed is null ? [] : new[] { NegotiatedSpeed.Value })
+            .Distinct()
+            .Order()
+    ];
 
     /// <summary>
     /// Whether MDI/MDI-X can be set explicitly.

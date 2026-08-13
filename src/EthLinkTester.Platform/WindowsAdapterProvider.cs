@@ -65,7 +65,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         return Task.Run(
             () =>
             {
-                var (name, negotiatedSpeed, driverVersion) = ResolveAdapter(adapterId);
+                var (name, negotiatedSpeed, maxSpeedBits, driverVersion) = ResolveAdapter(adapterId);
 
                 var keywords = new List<string>();
                 var forceable = new List<SpeedDuplex>();
@@ -109,7 +109,8 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 {
                     AdapterId = adapterId,
                     ForceableSettings = forceable,
-                    MaximumSpeed = MaximumSpeed(forceable, negotiatedSpeed),
+                    MaximumSpeed = MaximumSpeed(maxSpeedBits, negotiatedSpeed),
+                    NegotiatedSpeed = negotiatedSpeed,
                     SupportsMdiControl = supportsMdi,
                     SupportsJumboFrames = supportsJumbo,
                     DriverVersion = driverVersion,
@@ -127,7 +128,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
         return Task.Run(
             () =>
             {
-                var (name, _, _) = ResolveAdapter(adapterId);
+                var (name, _, _, _) = ResolveAdapter(adapterId);
                 var escaped = name.Replace("'", "''", StringComparison.Ordinal);
 
                 // Timestamp before the query so the interval never understates elapsed time,
@@ -218,31 +219,30 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
     }
 
     /// <summary>
-    /// Best available answer for how fast an adapter can go.
+    /// How fast an adapter can go, or null when that is genuinely unknown.
     /// </summary>
     /// <remarks>
-    /// There is no single property for this. The forceable list understates it, because a driver
-    /// legitimately omits 1000BASE-T and above (802.3 forbids forcing them), and the negotiated
-    /// speed only exists while the link is up. Taking the larger of the two is right when linked
-    /// and can understate a disabled or unplugged adapter - which the UI must not present as a
-    /// hardware limit.
+    /// Deliberately never derived from the forceable list. 802.3 forbids forcing 1000BASE-T and
+    /// above, so a gigabit adapter legitimately lists nothing over 100 Mbps - the reference
+    /// Killer E2400 does exactly that. Treating that list as a ceiling would report a
+    /// disconnected gigabit NIC as 100BASE-T hardware, suppress the 1 Gbps test, and blame the
+    /// fixture for what is actually a cable fault.
+    /// <para>
+    /// <c>MaxSpeed</c> would be the right answer but is empty on the reference hardware, so with
+    /// the link down there is no evidence and null is the honest result.
+    /// </para>
     /// </remarks>
-    private static LinkSpeed? MaximumSpeed(
-        List<SpeedDuplex> forceable, LinkSpeed? negotiated)
-    {
-        LinkSpeed? fromList = forceable.Count == 0 ? null : forceable.Max(s => s.Speed);
+    private static LinkSpeed? MaximumSpeed(long maxSpeedBits, LinkSpeed? negotiated) =>
+        ToLinkSpeed(maxSpeedBits) ?? negotiated;
 
-        if (fromList is null)
-        {
-            return negotiated;
-        }
+    private static LinkSpeed? ToLinkSpeed(long bitsPerSecond) =>
+        bitsPerSecond <= 0
+            ? null
+            : Enum.GetValues<LinkSpeed>()
+                  .Cast<LinkSpeed?>()
+                  .FirstOrDefault(s => s!.Value.BitsPerSecond() == bitsPerSecond);
 
-        return negotiated is null
-            ? fromList
-            : (LinkSpeed)Math.Max((int)fromList.Value, (int)negotiated.Value);
-    }
-
-    private static (string Name, LinkSpeed? NegotiatedSpeed, string? DriverVersion) ResolveAdapter(string adapterId)
+    private static (string Name, LinkSpeed? NegotiatedSpeed, long MaxSpeedBits, string? DriverVersion) ResolveAdapter(string adapterId)
     {
         var escaped = adapterId.Replace("'", "''", StringComparison.Ordinal);
 
@@ -252,14 +252,12 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
             .FirstOrDefault()
             ?? throw new InvalidOperationException($"No physical Ethernet adapter with id '{adapterId}'.");
 
-        var speedBits = ToLong(Prop(adapter, "Speed"));
-        var negotiated = Enum.GetValues<LinkSpeed>()
-            .Cast<LinkSpeed?>()
-            .FirstOrDefault(s => s!.Value.BitsPerSecond() == speedBits);
+        var negotiated = ToLinkSpeed(ToLong(Prop(adapter, "Speed")));
 
         return (
             Prop(adapter, "Name") as string ?? throw new InvalidOperationException("Adapter has no name."),
             negotiated,
+            ToLong(Prop(adapter, "MaxSpeed")),
             Prop(adapter, "DriverVersionString") as string);
     }
 
