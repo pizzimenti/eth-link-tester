@@ -27,11 +27,6 @@ public sealed class WindowsNpcapProbe : INpcapProbe
 
     private const string ServiceName = "npcap";
 
-    /// <summary>
-    /// Npcap's own versions are 0.x and 1.x, so a major at or above this came from the
-    /// WinPcap-compatibility version resource rather than from Npcap.
-    /// </summary>
-    private const int WinPcapCompatibilityMajor = 2;
 
     public Task<NpcapStatus> DetectAsync(CancellationToken cancellationToken = default) =>
         Task.Run(
@@ -82,18 +77,24 @@ public sealed class WindowsNpcapProbe : INpcapProbe
     }
 
     /// <summary>
-    /// The installed version, from the registry in preference to the DLL's file version.
+    /// The installed Npcap version, read from Npcap's own components rather than from
+    /// <c>wpcap.dll</c>.
     /// </summary>
     /// <remarks>
-    /// The obvious ordering is wrong here. Npcap ships a <c>wpcap.dll</c> whose version resource
-    /// deliberately advertises a <em>WinPcap</em> version - historically 4.1.0.2980 - so that
-    /// applications expecting WinPcap bind to it happily. Reading that as Npcap's own version
-    /// would report "Npcap 4.1.0 is ready" on every installation and silently disable the
-    /// minimum-version check, since 4.1 clears any 1.x floor.
     /// <para>
-    /// So the registry, which the installer writes with the real Npcap version, is authoritative.
-    /// The file version is a fallback only, and a major version at or above 2 is rejected as the
-    /// compatibility resource rather than believed - Npcap's own numbering is 0.x and 1.x.
+    /// <b>Never <c>wpcap.dll</c>.</b> That file is the libpcap-compatible layer and its version
+    /// resource advertises <em>libpcap's</em> version, which is what applications expecting
+    /// libpcap are meant to see. Measured against a real Npcap 1.88 install: <c>wpcap.dll</c>
+    /// reports 1.10.6 while the product is 1.88. Reading it produced the headline "Npcap 1.10.6
+    /// is ready" - a version that does not exist - and evaluated the minimum-version gate against
+    /// a number belonging to a different project.
+    /// </para>
+    /// <para>
+    /// <c>Packet.dll</c> sits in the same directory, is Npcap's own API component, and reports
+    /// 1.88 correctly. The driver binary agrees, and the uninstall entry's DisplayVersion is the
+    /// last resort. The registry key Npcap creates carries the install path, AdminOnly and
+    /// WinPcapCompatible - but on 1.88 it carries no version at all, which is why a
+    /// registry-first lookup silently fell through to the wrong file.
     /// </para>
     /// </remarks>
     private static Version? ReadVersion(RegistryKey? key, string driverDirectory)
@@ -103,29 +104,73 @@ public sealed class WindowsNpcapProbe : INpcapProbe
             return fromRegistry;
         }
 
-        var wpcap = Path.Combine(driverDirectory, "wpcap.dll");
-        if (!File.Exists(wpcap))
+        foreach (var candidate in new[]
+        {
+            Path.Combine(driverDirectory, "Packet.dll"),
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System), "Drivers", "npcap.sys"),
+        })
+        {
+            if (ReadFileVersion(candidate) is { } version)
+            {
+                return version;
+            }
+        }
+
+        return Version.TryParse(ReadUninstallDisplayVersion(), out var fromUninstall)
+            ? fromUninstall
+            : null;
+    }
+
+    /// <summary>
+    /// A binary's version, taken from the resource's <em>strings</em> rather than its numeric
+    /// fields.
+    /// </summary>
+    /// <remarks>
+    /// The two disagree, and only the strings are right. Measured on Npcap 1.88: both
+    /// <c>Packet.dll</c> and <c>npcap.sys</c> report <c>FileVersion</c> and
+    /// <c>ProductVersion</c> of "1.88" while their numeric
+    /// <c>FileMajorPart.FileMinorPart.FileBuildPart</c> reads 5.1.88 - a WinPcap-era
+    /// compatibility numbering carried in the same resource. The numeric fields are the more
+    /// natural-looking API and produce a confident, plausible, wrong answer.
+    /// </remarks>
+    private static Version? ReadFileVersion(string path)
+    {
+        if (!File.Exists(path))
         {
             return null;
         }
 
-        var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(wpcap);
+        var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
 
-        // Reject only the compatibility resource. Rejecting 0.x as well would silently pass every
-        // 0.9x beta as "version unknown", and unknown reads as Ready - defeating the
-        // minimum-version gate for exactly the builds it exists to catch.
-        if (info.FileMajorPart >= WinPcapCompatibilityMajor)
+        foreach (var text in new[] { info.FileVersion, info.ProductVersion })
         {
-            return null;
+            // Trims any build suffix a vendor appends after the numbers.
+            if (Version.TryParse(text?.Split(' ')[0], out var parsed) && parsed != new Version(0, 0))
+            {
+                return parsed;
+            }
         }
 
-        // A resource with no version at all is unknown, not 0.0.0.
-        if ((info.FileMajorPart, info.FileMinorPart, info.FileBuildPart) is (0, 0, 0))
+        return null;
+    }
+
+    private static string? ReadUninstallDisplayVersion()
+    {
+        foreach (var path in new[]
         {
-            return null;
+            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\NpcapInst",
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\NpcapInst",
+        })
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(path);
+            if (key?.GetValue("DisplayVersion") is string version)
+            {
+                return version;
+            }
         }
 
-        return new Version(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart);
+        return null;
     }
 
     /// <summary>

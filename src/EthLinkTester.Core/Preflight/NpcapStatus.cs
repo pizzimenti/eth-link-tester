@@ -119,9 +119,10 @@ public sealed record NpcapStatus
     {
         NpcapReadiness.Ready => null,
         NpcapReadiness.NotInstalled =>
-            $"Install Npcap from {DownloadUrl}. Leave \"WinPcap API-compatible mode\" unchecked - " +
-            "it is off by default. Npcap cannot be bundled with this app because its licence does " +
-            "not permit redistribution.",
+            $"Install Npcap from {DownloadUrl}. On the installer's options page, <b>untick</b> " +
+            "\"Install Npcap in WinPcap API-compatible Mode\" - it is ticked by default, and this " +
+            "app cannot use it. Npcap cannot be bundled here because its licence does not permit " +
+            "redistribution.",
         NpcapReadiness.ServiceStopped =>
             "Start the npcap service, or reboot. Installing Npcap without restarting leaves it " +
             "stopped until the driver loads.",
