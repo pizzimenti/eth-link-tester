@@ -21,7 +21,7 @@ public readonly record struct SpeedDuplex(LinkSpeed Speed, DuplexMode Duplex)
     /// True when this setting can genuinely be forced with auto-negotiation off.
     /// </summary>
     /// <remarks>
-    /// IEEE 802.3 Clause 40 requires auto-negotiation at 1000BASE-T and above so the two ends can
+    /// IEEE 802.3 requires auto-negotiation at 1000BASE-T and above so the two ends can
     /// resolve master/slave clock roles, so only 10 and 100 are truly forceable. A driver that
     /// appears to offer "1.0 Gbps Full Duplex" as a fixed setting - the Realtek USB adapter on the
     /// reference rig does - is restricting *advertised capability* while still negotiating. That

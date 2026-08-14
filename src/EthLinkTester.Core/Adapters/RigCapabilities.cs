@@ -26,7 +26,7 @@ public sealed record RigCapabilities
     /// </summary>
     /// <remarks>
     /// Two filters apply. Forcing one end alone does not pin the link, so both adapters must
-    /// offer the setting. And 802.3 Clause 40 forbids disabling negotiation at 1000BASE-T and
+    /// offer the setting. And 802.3 forbids disabling negotiation at 1000BASE-T and
     /// above, so those never appear here however the driver presents them - see
     /// <see cref="AdvertisementRestrictedSettings"/>.
     /// </remarks>
