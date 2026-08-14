@@ -58,4 +58,20 @@ public static class LinkSpeedExtensions
     /// 1 Gbps setting are restricting advertised capability, not disabling negotiation.
     /// </summary>
     public static bool RequiresAutoNegotiation(this LinkSpeed speed) => speed >= LinkSpeed.Mbps1000;
+
+    /// <summary>
+    /// The tier a raw bits-per-second reading corresponds to, or null when it matches none.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately exact rather than nearest-match. A reading that is not a standard rate is
+    /// something this app has not seen - a driver reporting an aggregate, a virtual adapter, a
+    /// value it invented - and rounding it to the closest tier would report a speed nobody
+    /// measured. Unknown is the honest answer, and callers already handle it.
+    /// </remarks>
+    public static LinkSpeed? FromBitsPerSecond(long bitsPerSecond) =>
+        bitsPerSecond <= 0
+            ? null
+            : Enum.GetValues<LinkSpeed>()
+                  .Cast<LinkSpeed?>()
+                  .FirstOrDefault(s => s!.Value.BitsPerSecond() == bitsPerSecond);
 }

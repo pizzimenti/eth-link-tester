@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything that touches WMI, NDIS, or the registry lives here, so Core stays platform-neutral
+    and unit-testable without a desktop session or an adapter.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Management.Infrastructure" />
+    <PackageReference Include="Microsoft.Management.Infrastructure.Runtime.Win" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EthLinkTester.Core\EthLinkTester.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -37,13 +37,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
-    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="ScottPlot.WinUI" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\EthLinkTester.Core\EthLinkTester.Core.csproj" />
+    <!-- The Rig page reads real adapters, so the app needs the Windows implementations. -->
+    <ProjectReference Include="..\EthLinkTester.Platform\EthLinkTester.Platform.csproj" />
   </ItemGroup>
 
 </Project>

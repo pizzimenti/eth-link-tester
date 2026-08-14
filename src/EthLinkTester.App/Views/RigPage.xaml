@@ -2,19 +2,266 @@
     x:Class="EthLinkTester.App.Views.RigPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:c="using:EthLinkTester.App.Controls">
+    xmlns:vm="using:EthLinkTester.App.ViewModels"
+    xmlns:safety="using:EthLinkTester.Core.Safety"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
 
-    <c:PhaseStub Heading="Rig"
-                 PhaseLabel="Phase 2"
-                 Summary="Adapter pair selection, live link state, capability probe, and the topology verdict. This is the page you start a run from.">
-        <c:PhaseStub.Details>
-            <StackPanel Spacing="8">
-                <TextBlock TextWrapping="Wrap" Text="• Two adapter cards showing negotiated speed, duplex, and hardware error counters updating live" />
-                <TextBlock TextWrapping="Wrap" Text="• Capability probe derives which speed tiers this rig can actually reach, rather than implying full coverage" />
-                <TextBlock TextWrapping="Wrap" Text="• Topology verdict: direct cable or a switch in the middle, with the confidence signals that decided it" />
-                <TextBlock TextWrapping="Wrap" Text="• Bus headroom, so a bottleneck can be attributed to the fixture instead of the cable" />
-                <TextBlock TextWrapping="Wrap" Text="• Golden-cable baseline status" />
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="32,24,32,32">
+        <StackPanel Spacing="16" MaxWidth="1100" HorizontalAlignment="Left">
+
+            <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                <StackPanel Spacing="2">
+                    <TextBlock Text="Rig" Style="{StaticResource TitleTextBlockStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.RigSummary, Mode=OneWay}"
+                               Style="{StaticResource BodyTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextTrimming="CharacterEllipsis"
+                               MaxLines="1"
+                               MaxWidth="640" />
+                </StackPanel>
+
+                <Button Command="{x:Bind ViewModel.RefreshCommand}"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Re-probe adapters">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        <TextBlock Text="Re-probe" />
+                    </StackPanel>
+                </Button>
+
+                <muxc:ProgressRing IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}"
+                                   Width="20" Height="20"
+                                   VerticalAlignment="Center" />
             </StackPanel>
-        </c:PhaseStub.Details>
-    </c:PhaseStub>
+
+            <!--
+              Recovery comes first in reading order because it describes something that already
+              happened to the machine, not something the user is about to choose.
+            -->
+            <muxc:InfoBar IsOpen="{x:Bind ViewModel.HasRecoveryMessage, Mode=OneWay}"
+                          IsClosable="True"
+                          Severity="{x:Bind ViewModel.RecoverySeverity, Mode=OneWay}"
+                          Title="{x:Bind ViewModel.RecoveryTitle, Mode=OneWay}"
+                          Message="{x:Bind ViewModel.RecoveryMessage, Mode=OneWay}" />
+
+            <muxc:InfoBar IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+                          IsClosable="True"
+                          Severity="Error"
+                          Title="Probe problem"
+                          Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" />
+
+            <muxc:InfoBar IsOpen="True"
+                          IsClosable="False"
+                          Severity="{x:Bind ViewModel.NpcapSeverity, Mode=OneWay}"
+                          Title="{x:Bind ViewModel.NpcapHeadline, Mode=OneWay}"
+                          Message="{x:Bind ViewModel.NpcapRemedy, Mode=OneWay}" />
+
+            <!-- Adapter cards -->
+            <ItemsControl ItemsSource="{x:Bind ViewModel.Adapters}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <!-- Wraps rather than clipping: a machine may have more than two NICs. -->
+                        <muxc:ItemsWrapGrid Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:AdapterCardViewModel">
+                        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="18,16"
+                                Margin="0,0,12,12"
+                                Width="520">
+                            <StackPanel Spacing="10">
+
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <!--
+                                      Glyph plus text, never colour alone. In high contrast and for
+                                      colour-blind users the glyph and the word are what survive.
+                                    -->
+                                    <FontIcon Glyph="{x:Bind StatusGlyph}" FontSize="16"
+                                              VerticalAlignment="Center" />
+                                    <!--
+                                      Trimmed because an unrecognised description falls back to
+                                      its full text, and vendor strings run to hundreds of
+                                      characters. The full text is on the line below regardless.
+                                    -->
+                                    <TextBlock Text="{x:Bind Nickname}"
+                                               Style="{StaticResource SubtitleTextBlockStyle}"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxLines="1"
+                                               MaxWidth="300"
+                                               ToolTipService.ToolTip="{x:Bind Description}" />
+                                    <!--
+                                      Windows' own name for the connection. Every other tool on the
+                                      machine identifies the port this way, so dropping it would
+                                      make this the one place that cannot be cross-referenced.
+                                    -->
+                                    <Border Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="4" Padding="6,2"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="{x:Bind ConnectionName}"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </Border>
+                                    <Border Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                            CornerRadius="4" Padding="6,2"
+                                            VerticalAlignment="Center"
+                                            Visibility="{x:Bind DefaultRouteVisibility}">
+                                        <TextBlock Text="Carries default route"
+                                                   Style="{StaticResource CaptionTextBlockStyle}" />
+                                    </Border>
+                                </StackPanel>
+
+                                <TextBlock Text="{x:Bind Description}"
+                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           TextWrapping="Wrap" />
+
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="Status"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Text="{x:Bind Status}" FontWeight="SemiBold" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="Negotiated"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Text="{x:Bind Speed}" FontWeight="SemiBold" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="2" Spacing="2">
+                                        <TextBlock Text="Duplex"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Text="{x:Bind Duplex}" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <muxc:InfoBar IsOpen="True" IsClosable="False" Severity="Warning"
+                                              Visibility="{x:Bind HalfDuplexWarningVisibility}"
+                                              Title="Half duplex"
+                                              Message="A modern link negotiating half duplex is almost always a negotiation failure rather than a deliberate setting." />
+
+                                <StackPanel Spacing="4">
+                                    <TextBlock Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="Speeds with positive evidence" />
+                                    <TextBlock Text="{x:Bind SupportedSpeeds}" TextWrapping="Wrap" />
+
+                                    <TextBlock Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="Forceable settings" Margin="0,6,0,0" />
+                                    <TextBlock Text="{x:Bind ForceableSettings}" TextWrapping="Wrap" />
+                                </StackPanel>
+
+                                <TextBlock Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                           TextWrapping="Wrap">
+                                    <Run Text="{x:Bind Bus}" /><Run Text=" · " /><Run Text="{x:Bind MacAddress}" /><Run Text=" · driver " /><Run Text="{x:Bind DriverVersion}" /><Run Text=" · " /><Run Text="{x:Bind AdvancedPropertyCount}" /><Run Text=" advanced properties" />
+                                </TextBlock>
+
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- What the pair can actually test -->
+            <!-- Hidden when the rig is incomplete: an empty capability card reads as "this rig
+                 can test nothing", which is a different claim from "there is no rig yet". -->
+            <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="18,16"
+                    Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="What this rig can test"
+                               Style="{StaticResource SubtitleTextBlockStyle}" />
+
+                    <Grid ColumnSpacing="24">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Text="Testable tiers"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.TestableSpeeds, Mode=OneWay}"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="Ceiling"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.Ceiling, Mode=OneWay}"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" Spacing="2">
+                            <TextBlock Text="Pinnable on both ends"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.ForceableSettings, Mode=OneWay}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Grid>
+
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Limitations}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <!--
+                                  A Grid, not a horizontal StackPanel. A horizontal StackPanel
+                                  measures its children with infinite available width, so
+                                  TextWrapping never engages and long limitations are silently
+                                  clipped at the window edge instead of wrapping.
+                                -->
+                                <Grid ColumnSpacing="8" Margin="0,4,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon Grid.Column="0" Glyph="&#xE946;" FontSize="14"
+                                              VerticalAlignment="Top" Margin="0,3,0,0"
+                                              Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Grid.Column="1" Text="{x:Bind}" TextWrapping="Wrap"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- Pre-run hazards -->
+            <ItemsControl ItemsSource="{x:Bind ViewModel.Warnings}"
+                          Visibility="{x:Bind ViewModel.WarningsVisibility, Mode=OneWay}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="safety:RunWarning">
+                        <muxc:InfoBar IsOpen="True" IsClosable="False" Severity="Warning"
+                                      Margin="0,0,0,8"
+                                      Title="{x:Bind Headline}"
+                                      Message="{x:Bind Detail}" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+        </StackPanel>
+    </ScrollViewer>
 </Page>

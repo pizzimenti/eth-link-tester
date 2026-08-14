@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/EthLinkTester.App/EthLinkTester.App.csproj" />
     <Project Path="src/EthLinkTester.Core/EthLinkTester.Core.csproj" />
+    <Project Path="src/EthLinkTester.Platform/EthLinkTester.Platform.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EthLinkTester.Core.Tests/EthLinkTester.Core.Tests.csproj" />

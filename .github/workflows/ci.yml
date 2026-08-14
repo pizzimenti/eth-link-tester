@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Phase branches build on every push, so patch versions keep a full build-and-test signal
+    # without an open pull request. Review bots are quota-limited and trigger on pull requests,
+    # so a phase opens exactly one PR - when the phase is complete - and gets exactly one bot
+    # pass. Actions minutes are free on a public repository; bot reviews are not.
+    branches: [main, 'phase-*']
     tags: ['v*']
   pull_request:
     branches: [main]
