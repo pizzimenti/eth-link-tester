@@ -335,11 +335,19 @@ public class GuardedAdapterConfiguratorTests
         var outcome = await configurator.RestoreAllAsync();
 
         Assert.Empty(outcome.Restored);
-        Assert.Single(outcome.Failures);
-        Assert.Contains("did not come from this app", outcome.Failures[0].Reason, StringComparison.Ordinal);
+        Assert.Empty(outcome.Failures);
+
+        // Its own category, not a failure: a failure implies a retry, and this can never succeed.
+        var rejection = Assert.Single(outcome.Rejected);
+        Assert.Contains("did not come from this app", rejection.Reason, StringComparison.Ordinal);
+        Assert.True(outcome.NeedsAttention);
 
         // The adapter keeps the value this app set; the crafted one is never written.
         Assert.Equal("4", rig.Values[Keyword]);
+
+        // And it is dropped rather than left to alarm every future launch.
+        Assert.Single(outcome.Abandoned);
+        Assert.Empty(rig.Entries);
     }
 
     /// <summary>

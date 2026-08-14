@@ -80,8 +80,6 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         return WithLockAsync(
             () =>
             {
-                EnsureDirectory();
-
                 RepairUnterminatedTail();
                 Append(Serialize(entry));
             },
@@ -296,14 +294,22 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     }
 
     /// <summary>
-    /// Creates the journal's directory, restricted to administrators when a location is supplied.
+    /// Creates the journal's directory and restricts it to administrators.
     /// </summary>
     /// <remarks>
-    /// The restriction is applied before the first write rather than checked afterwards. Under
-    /// %ProgramData% the inherited permissions grant every standard user append, and an
-    /// append-only journal that an elevated process applies to hardware is a complete attack with
-    /// one crafted line. A location that cannot be secured throws rather than degrading quietly:
-    /// an unprotected journal is not a weaker safety net, it is an attack surface.
+    /// <para>
+    /// Runs before <em>every</em> operation, not only before writing. Securing the write path
+    /// alone left the hole exactly where the attack is: %ProgramData% grants standard users
+    /// WriteData on the directory, so anyone can create a journal when none exists - and the
+    /// journal is deleted after every clean restore, so "none exists" is the usual state. The
+    /// elevated app then reads that planted file at startup and applies it to hardware. Recovery
+    /// never records anything, so a machine that has only ever recovered would never have been
+    /// secured at all.
+    /// </para>
+    /// <para>
+    /// A location that cannot be secured throws rather than degrading quietly: an unprotected
+    /// journal is not a weaker safety net, it is an attack surface.
+    /// </para>
     /// </remarks>
     private void EnsureDirectory()
     {
@@ -507,6 +513,7 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
 
                 try
                 {
+                    EnsureDirectory();
                     return operation();
                 }
                 finally
