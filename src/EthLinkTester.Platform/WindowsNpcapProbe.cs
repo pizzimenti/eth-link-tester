@@ -99,7 +99,7 @@ public sealed class WindowsNpcapProbe : INpcapProbe
     /// </remarks>
     private static Version? ReadVersion(RegistryKey? key, string driverDirectory)
     {
-        if (Version.TryParse(key?.GetValue("Version") as string, out var fromRegistry))
+        if (NpcapStatus.ParseVersion(key?.GetValue("Version") as string) is { } fromRegistry)
         {
             return fromRegistry;
         }
@@ -117,9 +117,7 @@ public sealed class WindowsNpcapProbe : INpcapProbe
             }
         }
 
-        return Version.TryParse(ReadUninstallDisplayVersion(), out var fromUninstall)
-            ? fromUninstall
-            : null;
+        return NpcapStatus.ParseVersion(ReadUninstallDisplayVersion());
     }
 
     /// <summary>
@@ -141,12 +139,21 @@ public sealed class WindowsNpcapProbe : INpcapProbe
             return null;
         }
 
-        var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+        System.Diagnostics.FileVersionInfo info;
+        try
+        {
+            info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+        }
+        catch (FileNotFoundException)
+        {
+            // Removed between the existence check and here - an uninstall running concurrently.
+            // The caller has other sources to try.
+            return null;
+        }
 
         foreach (var text in new[] { info.FileVersion, info.ProductVersion })
         {
-            // Trims any build suffix a vendor appends after the numbers.
-            if (Version.TryParse(text?.Split(' ')[0], out var parsed) && parsed != new Version(0, 0))
+            if (NpcapStatus.ParseVersion(text) is { } parsed)
             {
                 return parsed;
             }
