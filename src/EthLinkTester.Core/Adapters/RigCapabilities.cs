@@ -104,7 +104,7 @@ public sealed record RigCapabilities
         var limitations = BuildLimitations(
             firstAdapter, firstCapabilities,
             secondAdapter, secondCapabilities,
-            ceiling, forceable, advertisementOnly);
+            ceiling, testable, forceable, advertisementOnly);
 
         return new RigCapabilities
         {
@@ -123,6 +123,7 @@ public sealed record RigCapabilities
         NetworkAdapterInfo secondAdapter,
         AdapterCapabilities secondCapabilities,
         LinkSpeed? ceiling,
+        LinkSpeed[] testable,
         SpeedDuplex[] forceable,
         SpeedDuplex[] advertisementOnly)
     {
@@ -174,7 +175,9 @@ public sealed record RigCapabilities
                 "as forced-speed tests.");
         }
 
-        if (!forceable.Any(s => s.Speed == LinkSpeed.Mbps100))
+        // Only worth saying about a tier the rig would otherwise test. On a rig that cannot reach
+        // 100 Mbps at all, this is a caveat about a test nobody was going to run.
+        if (testable.Contains(LinkSpeed.Mbps100) && !forceable.Any(s => s.Speed == LinkSpeed.Mbps100))
         {
             limitations.Add(
                 "100BASE-TX cannot be pinned on both ends, so the 100 Mbps tier is only " +
