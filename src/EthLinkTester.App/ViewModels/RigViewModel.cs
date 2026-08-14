@@ -84,7 +84,6 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     public partial bool IsBusy { get; set; }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasRig))]
     public partial string RigSummary { get; set; } = "Not probed yet.";
 
     [ObservableProperty]
@@ -97,7 +96,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     public partial string ForceableSettings { get; set; } = "—";
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasRig))]
+    [NotifyPropertyChangedFor(nameof(RigVisibility))]
     public partial bool RigIsComplete { get; set; }
 
     [ObservableProperty]
@@ -117,6 +116,16 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial InfoBarSeverity RecoverySeverity { get; set; } = InfoBarSeverity.Success;
 
+    /// <summary>
+    /// Title for the recovery notice, which must not contradict its severity.
+    /// </summary>
+    /// <remarks>
+    /// It was hard-coded to "Adapter settings restored", so a pass that failed to restore anything
+    /// still announced success in the one place a hurried reader looks.
+    /// </remarks>
+    [ObservableProperty]
+    public partial string RecoveryTitle { get; set; } = "Adapter settings restored";
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasError))]
     public partial string? ErrorMessage { get; set; }
@@ -127,7 +136,15 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
 
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
 
-    public bool HasRig => RigIsComplete;
+    /// <summary>
+    /// Whether the capability card has anything to say.
+    /// </summary>
+    /// <remarks>
+    /// A Visibility rather than a bool because x:Bind does not convert one to the other, and a
+    /// property here is cheaper than registering a converter - the same reasoning as
+    /// <see cref="WarningsVisibility"/>.
+    /// </remarks>
+    public Visibility RigVisibility => RigIsComplete ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility WarningsVisibility =>
         Warnings.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -174,12 +191,16 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
             _unrestored = [.. outcome.Failures.Select(f => f.Entry)];
 
             RecoverySeverity = outcome.NeedsAttention ? InfoBarSeverity.Error : InfoBarSeverity.Success;
+            RecoveryTitle = outcome.NeedsAttention
+                ? "Adapter settings could not be fully restored"
+                : "Adapter settings restored";
             RecoveryMessage = DescribeRecovery(outcome);
         }
         catch (Exception ex)
         {
             RecoverySeverity = InfoBarSeverity.Error;
-            RecoveryMessage = $"Could not read the restore journal at {DefaultJournalPath}: {ex.Message}";
+            RecoveryTitle = "Could not read the restore journal";
+            RecoveryMessage = $"{DefaultJournalPath}: {ex.Message}";
         }
     }
 
@@ -272,6 +293,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
 
             var adapters = await _provider.GetPhysicalAdaptersAsync();
             var capabilities = new List<AdapterCapabilities?>();
+            var probeFailures = new List<string>();
 
             foreach (var adapter in adapters)
             {
@@ -284,11 +306,20 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
                 }
                 catch (Exception ex)
                 {
-                    ErrorMessage = $"Could not probe {adapter.Name}: {ex.Message}";
+                    // Collected rather than assigned: with two adapters failing, overwriting
+                    // showed only the second, and the first is the one that is usually the cause.
+                    probeFailures.Add($"{adapter.Name}: {ex.Message}");
                 }
 
                 capabilities.Add(probed);
                 Adapters.Add(new AdapterCardViewModel(adapter, probed));
+            }
+
+            if (probeFailures.Count > 0)
+            {
+                ErrorMessage = "Could not probe " +
+                    $"{probeFailures.Count} adapter{(probeFailures.Count == 1 ? "" : "s")}. " +
+                    string.Join("; ", probeFailures);
             }
 
             foreach (var warning in RunSafety.Inspect(adapters, _unrestored))

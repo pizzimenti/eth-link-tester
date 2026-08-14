@@ -228,14 +228,8 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
     /// Until then, unknown is the honest answer.
     /// </para>
     /// </remarks>
-    private static LinkSpeed? MaximumSpeed(long maxSpeedBits) => ToLinkSpeed(maxSpeedBits);
-
-    private static LinkSpeed? ToLinkSpeed(long bitsPerSecond) =>
-        bitsPerSecond <= 0
-            ? null
-            : Enum.GetValues<LinkSpeed>()
-                  .Cast<LinkSpeed?>()
-                  .FirstOrDefault(s => s!.Value.BitsPerSecond() == bitsPerSecond);
+    private static LinkSpeed? MaximumSpeed(long maxSpeedBits) =>
+        LinkSpeedExtensions.FromBitsPerSecond(maxSpeedBits);
 
     private static (LinkSpeed? NegotiatedSpeed, long MaxSpeedBits, string? DriverVersion) ResolveAdapter(
         string instanceId)
@@ -247,7 +241,7 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
             ?? throw new InvalidOperationException($"No physical Ethernet adapter with id '{instanceId}'.");
 
         return (
-            ToLinkSpeed(Cim.ToLong(Cim.Prop(adapter, "Speed"))),
+            LinkSpeedExtensions.FromBitsPerSecond(Cim.ToLong(Cim.Prop(adapter, "Speed"))),
             Cim.ToLong(Cim.Prop(adapter, "MaxSpeed")),
             Cim.Prop(adapter, "DriverVersionString") as string);
     }

@@ -137,7 +137,7 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
                 restored.Add(entry);
             }
-            catch (Exception ex) when (ex is AdapterNotFoundException or ArgumentException)
+            catch (Exception ex) when (ex is AdapterNotFoundException or UnusableAdapterIdException)
             {
                 // Retrying cannot help. The hardware is gone, or the entry names an adapter that
                 // cannot even be addressed - a malformed id passes JSON validation but no write

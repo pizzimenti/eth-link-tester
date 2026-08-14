@@ -65,6 +65,32 @@ public static partial class AdapterNickname
     [GeneratedRegex(@"\s{2,}")]
     private static partial Regex RunsOfSpace { get; }
 
+    [GeneratedRegex(@"\bto\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex Conversion { get; }
+
+    /// <summary>
+    /// One compiled matcher per noise phrase, built once.
+    /// </summary>
+    /// <remarks>
+    /// Word-bounded, which is the point rather than a detail: a plain substring search cut
+    /// "PCI Express" out of "PCI Expressway" and left "way", and turned "NetworkAdapter Pro" into
+    /// "Network Pro". Both are worse than leaving the description alone, because they still look
+    /// like real names.
+    /// <para>
+    /// Compiled up front rather than per call. The patterns are built from the private
+    /// <see cref="Noise"/> constants and never from input, so there is no untrusted pattern here -
+    /// but constructing a dozen of them on every card render is waste, and a static analyzer
+    /// cannot tell the difference between a variable pattern and an attacker-supplied one.
+    /// </para>
+    /// </remarks>
+    private static readonly Regex[] NoiseMatchers =
+    [
+        .. Noise.Select(phrase => new Regex(
+            @"\b" + Regex.Escape(phrase).Replace(@"\ ", @"\s+", StringComparison.Ordinal) + @"\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled,
+            TimeSpan.FromSeconds(1))),
+    ];
+
     /// <summary>
     /// A short name for the hardware, or the description unchanged when nothing recognisable
     /// survives.
@@ -90,9 +116,9 @@ public static partial class AdapterNickname
 
         working = KeepWhatItIsNotWhatItConvertsTo(working);
 
-        foreach (var phrase in Noise)
+        foreach (var matcher in NoiseMatchers)
         {
-            working = RemoveWholeWords(working, phrase);
+            working = matcher.Replace(working, " ");
         }
 
         working = RunsOfSpace.Replace(working, " ").Trim();
@@ -115,30 +141,13 @@ public static partial class AdapterNickname
     /// </remarks>
     private static string KeepWhatItIsNotWhatItConvertsTo(string value)
     {
-        var match = Regex.Match(
-            value, @"\bto\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var match = Conversion.Match(value);
 
         // Only when something survives in front of it - a description opening with "to" is not
         // one of these, and truncating would leave nothing.
         return match.Success && value[..match.Index].Trim().Length > 0
             ? value[..match.Index]
             : value;
-    }
-
-    /// <summary>
-    /// Removes a phrase only where it stands as whole words.
-    /// </summary>
-    /// <remarks>
-    /// A plain substring search cut "PCI Express" out of "PCI Expressway" and left "way", and
-    /// turned "NetworkAdapter Pro" into "Network Pro". Both are worse than leaving the description
-    /// alone, because they look like real names.
-    /// </remarks>
-    private static string RemoveWholeWords(string value, string phrase)
-    {
-        var pattern = @"\b" + Regex.Escape(phrase).Replace(@"\ ", @"\s+", StringComparison.Ordinal) + @"\b";
-
-        return Regex.Replace(
-            value, pattern, " ", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     /// <summary>

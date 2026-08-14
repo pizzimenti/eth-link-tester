@@ -35,6 +35,17 @@ public sealed partial class RigPage : Page
         }
 
         _initialized = true;
-        await ViewModel.InitializeAsync();
+
+        try
+        {
+            await ViewModel.InitializeAsync();
+        }
+        catch (Exception ex)
+        {
+            // An exception escaping an async void terminates the process with no message. Every
+            // stage inside InitializeAsync catches its own failures, so this only fires on
+            // something unforeseen - which is exactly when losing the message costs most.
+            ViewModel.ErrorMessage = $"The Rig page could not start: {ex.Message}";
+        }
     }
 }

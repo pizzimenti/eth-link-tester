@@ -117,10 +117,15 @@ public sealed class FileRestoreJournalTests : IDisposable
         // Simulate dying mid-write.
         await File.AppendAllTextAsync(JournalPath, "{\"AdapterId\":\"{503593B4\",\"Adapt");
 
-        var pending = (await journal.ReadPendingAsync()).Entries;
+        var contents = await journal.ReadPendingAsync();
 
-        Assert.Equal(2, pending.Count);
-        Assert.Equal("*FlowControl", pending[^1].PropertyKeyword);
+        Assert.Equal(2, contents.Entries.Count);
+        Assert.Equal("*FlowControl", contents.Entries[^1].PropertyKeyword);
+
+        // Classified as a torn tail, not corruption: the record was journaled before its adapter
+        // change was applied, so an incomplete one describes a change that never happened.
+        Assert.True(contents.HasTornFinalLine);
+        Assert.Equal(0, contents.UnreadableLines);
     }
 
     [Fact]

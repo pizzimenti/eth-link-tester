@@ -81,6 +81,10 @@ public sealed record AdapterCounters
                 "The earlier snapshot has a later timestamp.", nameof(earlier));
         }
 
+        // A zero frequency would make every rate infinite, and a negative one would make them
+        // negative - both of which plot and grade as though they were measurements.
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timestampFrequency);
+
         var seconds = (TimestampTicks - earlier.TimestampTicks) / (double)timestampFrequency;
 
         return new CounterDelta

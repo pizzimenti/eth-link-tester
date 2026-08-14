@@ -118,6 +118,17 @@ public class AdapterCountersTests
     }
 
     /// <summary>
+    /// A zero frequency makes every rate infinite and a negative one makes them negative, and
+    /// both plot and grade as though they were measurements.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void RejectsANonsensicalTimestampFrequency(long frequency) =>
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => Snapshot(Frequency).Since(Snapshot(0), frequency));
+
+    /// <summary>
     /// Regression, measured across a real disable/enable on the reference rig: ReceivedBytes went
     /// 397233 -> 3146 and the delta reported -0.315 Mbps. Negative throughput is not a number any
     /// consumer should have to recognise as corrupt, so the interval reports itself unmeasurable.

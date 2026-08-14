@@ -41,7 +41,7 @@
             <muxc:InfoBar IsOpen="{x:Bind ViewModel.HasRecoveryMessage, Mode=OneWay}"
                           IsClosable="True"
                           Severity="{x:Bind ViewModel.RecoverySeverity, Mode=OneWay}"
-                          Title="Adapter settings restored"
+                          Title="{x:Bind ViewModel.RecoveryTitle, Mode=OneWay}"
                           Message="{x:Bind ViewModel.RecoveryMessage, Mode=OneWay}" />
 
             <muxc:InfoBar IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
@@ -181,9 +181,12 @@
             </ItemsControl>
 
             <!-- What the pair can actually test -->
+            <!-- Hidden when the rig is incomplete: an empty capability card reads as "this rig
+                 can test nothing", which is a different claim from "there is no rig yet". -->
             <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1" CornerRadius="8" Padding="18,16">
+                    BorderThickness="1" CornerRadius="8" Padding="18,16"
+                    Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="What this rig can test"
                                Style="{StaticResource SubtitleTextBlockStyle}" />

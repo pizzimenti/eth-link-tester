@@ -110,7 +110,17 @@ public sealed class WindowsNpcapProbe : INpcapProbe
         }
 
         var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(wpcap);
-        if (info.FileMajorPart is 0 or >= WinPcapCompatibilityMajor)
+
+        // Reject only the compatibility resource. Rejecting 0.x as well would silently pass every
+        // 0.9x beta as "version unknown", and unknown reads as Ready - defeating the
+        // minimum-version gate for exactly the builds it exists to catch.
+        if (info.FileMajorPart >= WinPcapCompatibilityMajor)
+        {
+            return null;
+        }
+
+        // A resource with no version at all is unknown, not 0.0.0.
+        if ((info.FileMajorPart, info.FileMinorPart, info.FileBuildPart) is (0, 0, 0))
         {
             return null;
         }
@@ -172,9 +182,10 @@ public sealed class WindowsNpcapProbe : INpcapProbe
             using var service = new ServiceController(ServiceName);
             return service.Status == ServiceControllerStatus.Running;
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            // No such service: Npcap's files are present but the driver was never registered.
+            // No such service, or the service database refused the query. Either way the driver
+            // cannot be shown to be running, and a preflight that throws tells the user nothing.
             return false;
         }
     }

@@ -85,12 +85,12 @@ public class GuardedAdapterConfiguratorTests
         {
             if (MissingAdapterFor.Contains(keyword))
             {
-                throw new AdapterNotFoundException(adapterId);
+                throw AdapterNotFoundException.ForAdapter(adapterId);
             }
 
             if (UnusableIdFor.Contains(keyword))
             {
-                throw new ArgumentException($"Adapter id '{adapterId}' is not an interface GUID.");
+                throw UnusableAdapterIdException.ForId(adapterId, nameof(adapterId));
             }
 
             if (FailWritesFor.Contains(keyword))

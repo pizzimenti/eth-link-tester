@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Globalization;
+using EthLinkTester.Core.Adapters;
 using Microsoft.Management.Infrastructure;
 using Microsoft.Management.Infrastructure.Options;
 
@@ -64,8 +65,7 @@ internal static class Cim
     public static string ToInstanceId(string adapterId) =>
         Guid.TryParse(adapterId, out var guid)
             ? guid.ToString("B").ToUpperInvariant()
-            : throw new ArgumentException(
-                $"Adapter id '{adapterId}' is not an interface GUID.", nameof(adapterId));
+            : throw UnusableAdapterIdException.ForId(adapterId, nameof(adapterId));
 
     /// <summary>
     /// Validates a driver registry keyword for use in a query.

@@ -135,19 +135,29 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         // so a record that had been written durably was reported to the caller as a failed
         // journal write - which skips the adapter change and leaves a phantom entry that alarms
         // the next launch about a run that never happened.
+        var drained = false;
         try
         {
-            if (_mutex.WaitOne(DisposeDrainTimeout))
+            drained = _mutex.WaitOne(DisposeDrainTimeout);
+            if (drained)
             {
                 _mutex.ReleaseMutex();
             }
         }
         catch (AbandonedMutexException)
         {
+            drained = true;
             _mutex.ReleaseMutex();
         }
 
-        _mutex.Dispose();
+        // Only dispose once nothing is holding it. An operation that outlives the drain still has
+        // a ReleaseMutex to run in its finally block, and disposing underneath it turns work that
+        // succeeded into a reported failure - the exact bug this drain exists to prevent. Leaving
+        // the handle to the finalizer is the lesser cost.
+        if (drained)
+        {
+            _mutex.Dispose();
+        }
     }
 
     private static readonly TimeSpan AcquirePollInterval = TimeSpan.FromMilliseconds(50);

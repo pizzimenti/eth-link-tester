@@ -58,12 +58,7 @@ public sealed record NetworkAdapterInfo
     public bool CarriesDefaultRoute { get; init; }
 
     /// <summary>The negotiated speed as a standard tier, or null if it does not map to one.</summary>
-    public LinkSpeed? NegotiatedSpeed =>
-        LinkSpeedBitsPerSecond <= 0
-            ? null
-            : Enum.GetValues<LinkSpeed>()
-                  .Cast<LinkSpeed?>()
-                  .FirstOrDefault(s => s!.Value.BitsPerSecond() == LinkSpeedBitsPerSecond);
+    public LinkSpeed? NegotiatedSpeed => LinkSpeedExtensions.FromBitsPerSecond(LinkSpeedBitsPerSecond);
 
     public bool IsUp => Status == AdapterStatus.Up;
 }
