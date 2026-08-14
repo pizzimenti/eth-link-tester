@@ -131,6 +131,27 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         {
             try
             {
+                // Validated against the driver's own options, exactly as ApplyAsync does. Restore
+                // used to write the recorded value straight through, which trusted the journal
+                // file's contents completely - and the journal is a file on disk, so that trust
+                // was only ever as strong as its permissions. A value the driver does not offer
+                // cannot be one this app recorded, whatever the file says.
+                var property = await FindPropertyAsync(
+                    entry.AdapterId, entry.PropertyKeyword, cancellationToken).ConfigureAwait(false);
+
+                if (!property.Accepts(entry.OriginalValue))
+                {
+                    failures.Add(new RestoreFailure
+                    {
+                        Entry = entry,
+                        Reason =
+                            $"'{entry.OriginalValue}' is not a value {entry.PropertyKeyword} " +
+                            "accepts, so the journal entry did not come from this app.",
+                    });
+
+                    continue;
+                }
+
                 await _writer.WriteAsync(
                     entry.AdapterId, entry.PropertyKeyword, entry.OriginalValue, cancellationToken)
                     .ConfigureAwait(false);

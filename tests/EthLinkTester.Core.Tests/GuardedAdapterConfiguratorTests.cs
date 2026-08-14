@@ -318,6 +318,31 @@ public class GuardedAdapterConfiguratorTests
     }
 
     /// <summary>
+    /// Security regression: the journal is a file on disk, so restore's trust in it is only as
+    /// strong as the file's permissions - and under %ProgramData% every standard user could append
+    /// to it. A value the driver does not offer cannot be one this app recorded, whatever the file
+    /// says, so restore validates against the driver's options exactly as apply does.
+    /// </summary>
+    [Fact]
+    public async Task RefusesToRestoreAValueTheDriverDoesNotOffer()
+    {
+        var (rig, configurator) = Build();
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+
+        // What an appended entry looks like: well-formed, and naming a value no driver offers.
+        rig.Entries[0] = rig.Entries[0] with { OriginalValue = "99" };
+
+        var outcome = await configurator.RestoreAllAsync();
+
+        Assert.Empty(outcome.Restored);
+        Assert.Single(outcome.Failures);
+        Assert.Contains("did not come from this app", outcome.Failures[0].Reason, StringComparison.Ordinal);
+
+        // The adapter keeps the value this app set; the crafted one is never written.
+        Assert.Equal("4", rig.Values[Keyword]);
+    }
+
+    /// <summary>
     /// Clearing is the one moment the safety net comes off, so a failed restore must keep the
     /// journal for the next launch to retry.
     /// </summary>

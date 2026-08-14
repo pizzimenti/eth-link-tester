@@ -51,10 +51,14 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     /// </remarks>
     private int _inFlight;
 
-    public FileRestoreJournal(string path, string? mutexName = null)
+    private readonly IJournalLocation? _location;
+
+    public FileRestoreJournal(
+        string path, string? mutexName = null, IJournalLocation? location = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         _path = path;
+        _location = location;
 
         // Session-local rather than Global: the case that matters is two instances run by the
         // same user, and a Global mutex needs privileges that would make the journal untestable
@@ -76,11 +80,7 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         return WithLockAsync(
             () =>
             {
-                var directory = System.IO.Path.GetDirectoryName(_path);
-                if (!string.IsNullOrEmpty(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
+                EnsureDirectory();
 
                 RepairUnterminatedTail();
                 Append(Serialize(entry));
@@ -293,6 +293,33 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
             UnreadableLines = unreadable,
             HasTornFinalLine = torn,
         };
+    }
+
+    /// <summary>
+    /// Creates the journal's directory, restricted to administrators when a location is supplied.
+    /// </summary>
+    /// <remarks>
+    /// The restriction is applied before the first write rather than checked afterwards. Under
+    /// %ProgramData% the inherited permissions grant every standard user append, and an
+    /// append-only journal that an elevated process applies to hardware is a complete attack with
+    /// one crafted line. A location that cannot be secured throws rather than degrading quietly:
+    /// an unprotected journal is not a weaker safety net, it is an attack surface.
+    /// </remarks>
+    private void EnsureDirectory()
+    {
+        var directory = System.IO.Path.GetDirectoryName(_path);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return;
+        }
+
+        if (_location is null)
+        {
+            Directory.CreateDirectory(directory);
+            return;
+        }
+
+        _location.Secure(directory);
     }
 
     /// <summary>Whether the file ends without a record terminator.</summary>

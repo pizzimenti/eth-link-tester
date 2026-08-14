@@ -40,7 +40,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     private readonly FileRestoreJournal? _ownedJournal;
 
     public RigViewModel()
-        : this(new WindowsAdapterProvider(), new FileRestoreJournal(DefaultJournalPath), new WindowsNpcapProbe())
+        : this(new WindowsAdapterProvider(), new FileRestoreJournal(DefaultJournalPath, location: new WindowsJournalLocation()), new WindowsNpcapProbe())
     {
     }
 
