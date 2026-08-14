@@ -39,7 +39,17 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
 {
     private readonly string _path;
     private readonly Mutex _mutex;
-    private bool _disposed;
+    private volatile bool _disposed;
+
+    /// <summary>
+    /// Operations that have been admitted but not yet finished.
+    /// </summary>
+    /// <remarks>
+    /// Reserved before scheduling rather than counted once running. A caller that passed the
+    /// disposal check in a public method is not yet holding the mutex, so draining on mutex
+    /// ownership alone would let it be scheduled after the handle was disposed.
+    /// </remarks>
+    private int _inFlight;
 
     public FileRestoreJournal(string path, string? mutexName = null)
     {
@@ -135,10 +145,19 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         // so a record that had been written durably was reported to the caller as a failed
         // journal write - which skips the adapter change and leaves a phantom entry that alarms
         // the next launch about a run that never happened.
+        // Two things must settle: every admitted operation must have finished, and the mutex must
+        // be free. Waiting on ownership alone would miss one that has reserved but not yet
+        // acquired.
+        var deadline = Environment.TickCount64 + (long)DisposeDrainTimeout.TotalMilliseconds;
+        while (Volatile.Read(ref _inFlight) > 0 && Environment.TickCount64 < deadline)
+        {
+            Thread.Sleep(ReservationPollInterval);
+        }
+
         var drained = false;
         try
         {
-            drained = _mutex.WaitOne(DisposeDrainTimeout);
+            drained = Volatile.Read(ref _inFlight) == 0 && _mutex.WaitOne(DisposeDrainTimeout);
             if (drained)
             {
                 _mutex.ReleaseMutex();
@@ -161,6 +180,8 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     }
 
     private static readonly TimeSpan AcquirePollInterval = TimeSpan.FromMilliseconds(50);
+
+    private const int ReservationPollInterval = 10;
 
     /// <summary>
     /// How long disposal waits for in-flight work. Bounded because a cross-process holder must not
@@ -405,24 +426,6 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     /// reader tolerates a torn final line, so there is nothing to roll back.
     /// </para>
     /// </remarks>
-    private Task<T> WithLockAsync<T>(Func<T> operation, CancellationToken cancellationToken) =>
-        Task.Run(
-            () =>
-            {
-                Acquire(cancellationToken);
-
-                try
-                {
-                    return operation();
-                }
-                finally
-                {
-                    _mutex.ReleaseMutex();
-                }
-            },
-            cancellationToken);
-
-    /// <summary>Void-returning overload. Task&lt;object?&gt; is a Task, so callers return it directly.</summary>
     /// <summary>
     /// Takes the lock, remaining answerable to cancellation while it waits.
     /// </summary>
@@ -452,6 +455,43 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
                 return;
             }
         }
+    }
+
+    private Task<T> WithLockAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _inFlight);
+
+        // Re-checked after reserving, which is the point of reserving first: between the public
+        // method's check and this line, Dispose can have run to completion.
+        if (_disposed)
+        {
+            Interlocked.Decrement(ref _inFlight);
+            throw new ObjectDisposedException(nameof(FileRestoreJournal));
+        }
+
+        // The token is deliberately not passed to Task.Run. Doing so would skip the body outright
+        // for an already-cancelled token, and the reservation would never be released. Acquire
+        // honours the token as its first act instead.
+        return Task.Run(() =>
+        {
+            try
+            {
+                Acquire(cancellationToken);
+
+                try
+                {
+                    return operation();
+                }
+                finally
+                {
+                    _mutex.ReleaseMutex();
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _inFlight);
+            }
+        });
     }
 
     private Task<object?> WithLockAsync(Action operation, CancellationToken cancellationToken) =>
