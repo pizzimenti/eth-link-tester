@@ -23,7 +23,17 @@ internal sealed record LinkSpeedOption(LinkSpeed Value, string Label);
 /// The MAC is carried as bytes rather than re-parsed at start, so an adapter whose address the
 /// framework cannot read is excluded from the list instead of failing when the user presses Start.
 /// </remarks>
-internal sealed record AdapterOption(string Id, string Label, byte[] Mac, LinkSpeed? NegotiatedSpeed);
+internal sealed record AdapterOption(string Id, string Label, LinkSpeed? NegotiatedSpeed)
+{
+    /// <summary>The adapter's hardware address, six bytes.</summary>
+    /// <remarks>
+    /// Deliberately not a positional member. A <c>byte[]</c> in a record's primary constructor
+    /// joins its generated equality, and arrays compare by reference - so two options describing
+    /// the same adapter would test unequal, and any code matching a selection against a refreshed
+    /// list would silently fail to find it.
+    /// </remarks>
+    public required byte[] Mac { get; init; }
+}
 
 /// <summary>Where a run's numbers come from.</summary>
 internal enum EngineSource
@@ -102,6 +112,10 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(SimulationVisibility))]
     [NotifyPropertyChangedFor(nameof(RigVisibility))]
     [NotifyPropertyChangedFor(nameof(LinkSpeedIsChosen))]
+    // IsSimulated drives the permanent "Simulated data" warning. Without this notification the
+    // banner only corrected itself when a run started, so switching from Hardware to Simulated
+    // while idle left it hidden - which is precisely the failure this file calls unacceptable.
+    [NotifyPropertyChangedFor(nameof(IsSimulated))]
     public partial EngineSource Source { get; set; }
 
     [ObservableProperty]
@@ -273,6 +287,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         {
             var found = await _provider.GetPhysicalAdaptersAsync();
 
+            var previousTransmit = TransmitAdapter?.Id;
+            var previousReceive = ReceiveAdapter?.Id;
+
             Adapters.Clear();
             foreach (var adapter in found)
             {
@@ -283,14 +300,22 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
                     Adapters.Add(new AdapterOption(
                         adapter.Id,
                         $"{AdapterNickname.From(adapter.Description, adapter.Name)} — {DescribeLink(adapter)}",
-                        mac.GetAddressBytes(),
-                        adapter.NegotiatedSpeed));
+                        adapter.NegotiatedSpeed)
+                    {
+                        Mac = mac.GetAddressBytes(),
+                    });
                 }
             }
 
-            // The rig is two adapters wired to each other, so the common case needs no choosing.
-            TransmitAdapter ??= Adapters.FirstOrDefault();
-            ReceiveAdapter ??= Adapters.FirstOrDefault(a => a.Id != TransmitAdapter?.Id);
+            // Restored by id, because Clear() above emptied the ComboBoxes and the two-way bindings
+            // wrote null back into both selections. Without this the `??=` fallback re-picked the
+            // first two adapters on every visit to the page, so a deliberate choice was silently
+            // replaced and the next run transmitted on a different NIC.
+            TransmitAdapter = Adapters.FirstOrDefault(a => a.Id == previousTransmit)
+                ?? Adapters.FirstOrDefault();
+            ReceiveAdapter = Adapters.FirstOrDefault(a => a.Id == previousReceive)
+                // The rig is two adapters wired to each other, so the first run needs no choosing.
+                ?? Adapters.FirstOrDefault(a => a.Id != TransmitAdapter?.Id);
         }
         catch (Exception ex)
         {
@@ -351,7 +376,7 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
             await _engine.StartAsync(new EngineRunSettings
             {
-                LinkSpeed = EffectiveLinkSpeed(),
+                LinkSpeed = LinkSpeed,
                 FrameBytes = FrameBytes,
             });
 
@@ -372,13 +397,72 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// The rate the run is measured against: what the adapters negotiated, or the user's pick when
-    /// nothing has negotiated anything.
+    /// Adopts the negotiated rate as the run's link speed whenever the rig can supply one.
     /// </summary>
-    private LinkSpeed EffectiveLinkSpeed() =>
-        Source == EngineSource.Hardware
-            ? TransmitAdapter?.NegotiatedSpeed ?? LinkSpeed
-            : LinkSpeed;
+    /// <remarks>
+    /// The run used to be measured against the negotiated speed while the greyed picker went on
+    /// showing the constructor default. On a 100 Mbps link the screen said 1 Gbps and the run was
+    /// graded against 100 - the number on display and the number in use were different, which is
+    /// the exact dishonesty this app exists to avoid. One value now, shown and used.
+    /// </remarks>
+    private void AdoptNegotiatedLinkSpeed()
+    {
+        if (Source == EngineSource.Hardware && TransmitAdapter?.NegotiatedSpeed is { } negotiated)
+        {
+            LinkSpeed = negotiated;
+        }
+    }
+
+    partial void OnSourceChanged(EngineSource value) => AdoptNegotiatedLinkSpeed();
+
+    /// <summary>Guards the swap below against triggering itself.</summary>
+    private bool _swapping;
+
+    partial void OnTransmitAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
+    {
+        AdoptNegotiatedLinkSpeed();
+        SwapIfBothEndsAreTheSame(oldValue, newValue, receiveChanged: false);
+    }
+
+    partial void OnReceiveAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue) =>
+        SwapIfBothEndsAreTheSame(oldValue, newValue, receiveChanged: true);
+
+    /// <summary>
+    /// Moves the displaced adapter to the other end rather than leaving both ends the same.
+    /// </summary>
+    /// <remarks>
+    /// Picking the adapter that is already at the far end is how someone asks to test the other
+    /// direction, and on this rig the direction genuinely matters - the same cable measures four
+    /// times faster one way than the other at 64-byte frames. Without the swap that click produced
+    /// a pair the engine refuses, surfacing only as a Start button that had quietly greyed out.
+    /// </remarks>
+    private void SwapIfBothEndsAreTheSame(
+        AdapterOption? displaced, AdapterOption? chosen, bool receiveChanged)
+    {
+        var other = receiveChanged ? TransmitAdapter : ReceiveAdapter;
+
+        if (_swapping || chosen is null || other is null || chosen.Id != other.Id)
+        {
+            return;
+        }
+
+        _swapping = true;
+        try
+        {
+            if (receiveChanged)
+            {
+                TransmitAdapter = displaced;
+            }
+            else
+            {
+                ReceiveAdapter = displaced;
+            }
+        }
+        finally
+        {
+            _swapping = false;
+        }
+    }
 
     /// <summary>
     /// Builds the engine for a run, or null when this build has none.

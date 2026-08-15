@@ -61,21 +61,31 @@
                               IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
                 </StackPanel>
 
+                <!--
+                  LabeledBy on both pickers. They are identical to a screen reader otherwise - it
+                  announces the ComboBox content, not the caption above it - and the two are not
+                  interchangeable: choosing the wrong one runs the test in the opposite direction,
+                  which on this rig gives a four-times-different result at small frame sizes.
+                -->
                 <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
-                    <TextBlock Text="Transmit from" Style="{StaticResource CaptionTextBlockStyle}"
+                    <TextBlock x:Name="TransmitCaption" Text="Transmit from"
+                               Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <ComboBox MinWidth="190"
                               DisplayMemberPath="Label"
+                              AutomationProperties.LabeledBy="{x:Bind TransmitCaption}"
                               ItemsSource="{x:Bind ViewModel.Adapters}"
                               SelectedItem="{x:Bind ViewModel.TransmitAdapter, Mode=TwoWay}"
                               IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
                 </StackPanel>
 
                 <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
-                    <TextBlock Text="Receive on" Style="{StaticResource CaptionTextBlockStyle}"
+                    <TextBlock x:Name="ReceiveCaption" Text="Receive on"
+                               Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <ComboBox MinWidth="190"
                               DisplayMemberPath="Label"
+                              AutomationProperties.LabeledBy="{x:Bind ReceiveCaption}"
                               ItemsSource="{x:Bind ViewModel.Adapters}"
                               SelectedItem="{x:Bind ViewModel.ReceiveAdapter, Mode=TwoWay}"
                               IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
