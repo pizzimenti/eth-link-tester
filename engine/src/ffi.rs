@@ -8,6 +8,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use crate::engine::{Engine, RunConfig, StartError};
 use crate::TelemetrySample;
@@ -26,23 +27,55 @@ pub const ELT_ERR_SAME_DEVICE: i32 = -6;
 pub const ELT_ERR_FRAME_LENGTH: i32 = -7;
 
 const STATE_RUNNING: u32 = 0;
-const STATE_BUSY: u32 = 1;
 const STATE_STOPPED: u32 = 2;
 
 /// Opaque handle. The host never dereferences this.
 ///
-/// Carries its own state word because the C ABI cannot stop a caller from draining a handle that
-/// another thread is freeing, or from stopping the same handle twice. Both were reachable and both
-/// were fatal: drain-after-stop faulted with an access violation, double-stop corrupted the heap.
-/// Neither is something `catch_unwind` can help with - the process is already gone.
+/// # Why the allocation is never freed
 ///
-/// That matters more here than in most libraries. The whole reason this crate unwinds rather than
-/// aborts is that the managed host holds the restore journal and is the only thing that can put a
-/// forced adapter back; an access violation strands the adapter exactly as thoroughly as an abort
-/// would, and takes the recovery with it.
+/// The C ABI cannot stop a caller from draining a handle that has been stopped, or from stopping
+/// the same handle twice. Both were reachable and both were fatal: drain-after-stop faulted with an
+/// access violation, double-stop corrupted the heap.
+///
+/// A state word alone does not fix that, which was the mistake in the first attempt. `stop` freed
+/// the allocation the moment it won the transition - and the state word lives *inside* that
+/// allocation, so every later call read a freed byte to decide whether the handle was alive. The
+/// check and the thing it was checking died together.
+///
+/// So `stop` drops the [`Engine`] - the threads, the capture devices, everything expensive - and
+/// leaves this struct allocated as a tombstone. A late or repeated call then reads a valid
+/// `STATE_STOPPED` and gets an error code. The leak is about a hundred bytes per run, which after
+/// ten thousand runs is under a megabyte; the alternative is an access violation, and on this
+/// system an access violation is worse than it sounds. The whole reason this crate unwinds rather
+/// than aborts is that the managed host holds the restore journal and is the only thing that can
+/// put a forced adapter back - a crash strands the adapter exactly as thoroughly as an abort would,
+/// and takes the recovery with it.
+///
+/// The mutex, not the state word, is what makes concurrent access safe. The state word only
+/// answers "has this been stopped", which the `Option` inside confirms authoritatively.
 pub struct EngineHandle {
     state: AtomicU32,
-    engine: Engine,
+    engine: Mutex<Option<Engine>>,
+}
+
+impl EngineHandle {
+    /// Runs `body` against the live engine, or returns a code when there is none.
+    ///
+    /// A poisoned mutex means a previous call panicked while holding it, so the engine's state is
+    /// unknown; refusing is the only honest answer.
+    fn with_engine(&self, body: impl FnOnce(&Engine) -> i32) -> i32 {
+        if self.state.load(Ordering::Acquire) != STATE_RUNNING {
+            return ELT_ERR_NOT_RUNNING;
+        }
+
+        match self.engine.lock() {
+            Ok(guard) => match guard.as_ref() {
+                Some(engine) => body(engine),
+                None => ELT_ERR_NOT_RUNNING,
+            },
+            Err(_) => ELT_ERR_PANIC,
+        }
+    }
 }
 
 /// # Safety
@@ -97,7 +130,7 @@ pub unsafe extern "C" fn elt_engine_start(
             Ok(engine) => {
                 let handle = Box::into_raw(Box::new(EngineHandle {
                     state: AtomicU32::new(STATE_RUNNING),
-                    engine,
+                    engine: Mutex::new(Some(engine)),
                 }));
                 unsafe { *out_handle = handle };
                 ELT_OK
@@ -141,66 +174,53 @@ pub unsafe extern "C" fn elt_engine_drain(
         return ELT_ERR_NULL_ARGUMENT;
     }
 
+    // Sound because the allocation is never freed - see EngineHandle.
     let engine_handle = unsafe { &*handle };
 
-    // Claimed outside the catch, and released outside it, so a panic in between cannot strand the
-    // handle in Busy. It could: `catch_unwind` skips the rest of the closure, so the store back to
-    // Running never ran, every later call was refused as not running - including the host's
-    // cleanup `elt_engine_stop` - and the host then dropped the pointer, leaving three threads and
-    // two open capture devices running for the life of the process, still transmitting.
-    if engine_handle
-        .state
-        .compare_exchange(
-            STATE_RUNNING,
-            STATE_BUSY,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        )
-        .is_err()
-    {
-        return ELT_ERR_NOT_RUNNING;
-    }
-
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let out = unsafe { std::slice::from_raw_parts_mut(samples, capacity as usize) };
-        // The state word above guarantees this is the only drain in flight, which is the ring's
-        // single-consumer requirement.
-        let drained = engine_handle.engine.ring().drain(out);
+        engine_handle.with_engine(|engine| {
+            let out = unsafe { std::slice::from_raw_parts_mut(samples, capacity as usize) };
+            // The mutex held across this call is what satisfies the ring's single-consumer
+            // requirement: two hosts draining at once are serialised rather than interleaved.
+            let drained = engine.ring().drain(out);
 
-        if !out_dropped.is_null() {
-            unsafe { *out_dropped = drained.dropped };
-        }
+            if !out_dropped.is_null() {
+                unsafe { *out_dropped = drained.dropped };
+            }
 
-        // Non-negative is a count; negative is a code. The host checks the sign.
-        i32::try_from(drained.count).unwrap_or(i32::MAX)
+            // Non-negative is a count; negative is a code. The host checks the sign.
+            i32::try_from(drained.count).unwrap_or(i32::MAX)
+        })
     }));
-
-    engine_handle.state.store(STATE_RUNNING, Ordering::Release);
 
     result.unwrap_or(ELT_ERR_PANIC)
 }
 
-/// Stops the engine and frees the handle. Safe to call once per handle.
+/// Stops the engine. Safe to call more than once, and safe to call while a drain is in flight.
+///
+/// The handle's allocation deliberately outlives this - see [`EngineHandle`] - so a host that
+/// drains once more after stopping gets `ELT_ERR_NOT_RUNNING` rather than an access violation.
 ///
 /// # Safety
-/// `handle` must come from `elt_engine_start` and must not be used afterwards.
+/// `handle` must come from `elt_engine_start`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn elt_engine_stop(handle: *mut EngineHandle) -> i32 {
     if handle.is_null() {
         return ELT_ERR_NULL_ARGUMENT;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let engine_handle = unsafe { &*handle };
+    // Sound because the allocation is never freed - see EngineHandle.
+    let engine_handle = unsafe { &*handle };
 
-        // Only the transition from Running frees. A second stop, or one racing a drain, is refused
-        // rather than double-freeing - the difference between an error code and heap corruption.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // Only one caller wins the transition, so a second stop is refused rather than joining the
+        // worker threads twice.
         if engine_handle
             .state
             .compare_exchange(
                 STATE_RUNNING,
                 STATE_STOPPED,
-                Ordering::Acquire,
+                Ordering::AcqRel,
                 Ordering::Relaxed,
             )
             .is_err()
@@ -208,9 +228,16 @@ pub unsafe extern "C" fn elt_engine_stop(handle: *mut EngineHandle) -> i32 {
             return ELT_ERR_NOT_RUNNING;
         }
 
-        // Dropping stops the threads and joins them; the engine's Drop does the work.
-        drop(unsafe { Box::from_raw(handle) });
-        ELT_OK
+        match engine_handle.engine.lock() {
+            // Taking the engine out and dropping it stops the threads and joins them; the engine's
+            // own Drop does the work. The handle itself stays allocated as a tombstone, so a late
+            // drain reads a valid stopped state instead of freed memory.
+            Ok(mut guard) => {
+                drop(guard.take());
+                ELT_OK
+            }
+            Err(_) => ELT_ERR_PANIC,
+        }
     }));
 
     result.unwrap_or(ELT_ERR_PANIC)
@@ -233,26 +260,12 @@ pub unsafe extern "C" fn elt_engine_fault(handle: *mut EngineHandle) -> i32 {
         return ELT_ERR_NULL_ARGUMENT;
     }
 
+    // Sound because the allocation is never freed - see EngineHandle.
     let engine_handle = unsafe { &*handle };
 
-    // Same claim the drain takes, released the same way: outside the catch, so a panic cannot
-    // leave the handle stranded in Busy and unstoppable.
-    if engine_handle
-        .state
-        .compare_exchange(
-            STATE_RUNNING,
-            STATE_BUSY,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        )
-        .is_err()
-    {
-        return ELT_ERR_NOT_RUNNING;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| engine_handle.engine.fault() as i32));
-
-    engine_handle.state.store(STATE_RUNNING, Ordering::Release);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        engine_handle.with_engine(|engine| engine.fault() as i32)
+    }));
 
     result.unwrap_or(ELT_ERR_PANIC)
 }

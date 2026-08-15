@@ -28,11 +28,24 @@
 //! 64-bit atomics makes each word access defined; the stamp still does the job it always did,
 //! which is catching a copy that spans two different writes.
 //!
-//! Relaxed ordering is enough for those words because the stamp's Release/Acquire pair supplies
-//! the ordering. The payoff is that this module now contains no `unsafe` at all: no `UnsafeCell`,
-//! no hand-written `Sync`, and no unsafe fn whose contract a caller could quietly break.
+//! The payoff is that this module contains no `unsafe` at all: no `UnsafeCell`, no hand-written
+//! `Sync`, and no unsafe fn whose contract a caller could quietly break.
+//!
+//! # Why there are fences as well as orderings
+//!
+//! Making the payload atomic removes the data race but does not by itself implement a seqlock, and
+//! the obvious annotation is wrong in both directions. A `Release` *store* orders what came before
+//! it, so the zeroing store does not stop the payload writes that follow from floating above it.
+//! An `Acquire` *load* orders what comes after it, so the consumer's second stamp read does not
+//! stop the payload reads that precede it from sinking below it. A consumer could therefore see
+//! both stamp reads return the old value and still pick up words from the new write - accepting a
+//! torn sample through the check built to catch it.
+//!
+//! The standing fix is a `Release` fence on the writer after zeroing, and an `Acquire` fence on the
+//! reader after copying. Those are the barriers the stamp comparison actually needs, and they are
+//! free on x86; the annotations alone were correct only by accident of the hardware.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicU64, Ordering};
 
 use crate::TelemetrySample;
 
@@ -142,7 +155,11 @@ impl TelemetryRing {
 
         // Zero first so a consumer copying this slot sees the stamp change and discards what it
         // read, rather than assembling a sample from the old value and the new one.
-        slot.stamp.store(0, Ordering::Release);
+        slot.stamp.store(0, Ordering::Relaxed);
+
+        // Keeps the payload writes below from floating above the zeroing store. A Release *store*
+        // orders what precedes it, which is the wrong half of the barrier here.
+        fence(Ordering::Release);
 
         for (cell, word) in slot.value.iter().zip(to_words(&sample)) {
             cell.store(word, Ordering::Relaxed);
@@ -174,11 +191,17 @@ impl TelemetryRing {
             let slot = &self.slots[(read & MASK) as usize];
 
             let before = slot.stamp.load(Ordering::Acquire);
+
             let mut words = [0u64; WORDS];
             for (word, cell) in words.iter_mut().zip(slot.value.iter()) {
                 *word = cell.load(Ordering::Relaxed);
             }
-            let after = slot.stamp.load(Ordering::Acquire);
+
+            // Keeps the payload reads above from sinking below the second stamp read. An Acquire
+            // *load* orders what follows it, which is the wrong half of the barrier here - without
+            // this the copy could happen after both stamp reads had already agreed.
+            fence(Ordering::Acquire);
+            let after = slot.stamp.load(Ordering::Relaxed);
 
             if before == read + 1 && after == before {
                 out[count] = from_words(words);
