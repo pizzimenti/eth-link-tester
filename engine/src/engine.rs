@@ -7,25 +7,42 @@
 //!
 //! # What the latency figure includes, and what it does not
 //!
-//! Timing one frame per batch (see [`frame::stamp`]) removes this engine's own queue from the
-//! measurement. It does not remove the *driver's*. `pcap_sendqueue_transmit` returns when the
-//! driver has accepted the batch, not when the wire has carried it, so the next batch's first
-//! frame can still be sitting behind the previous one inside the NIC.
+//! Latency comes from one timed probe per batch, sent on its own immediately before the batch goes
+//! out. Two sources of self-inflicted error were removed to get there. Timing a frame on its way
+//! *into* the send queue made it report its own queue position rather than the link. Timing the
+//! batch's first frame instead put the CPU cost of assembling the whole batch into the reading -
+//! worth 1.3 ms at 64-byte frames, where a batch is some five thousand copies.
 //!
-//! Measured on the reference rig: 1518-byte frames report p50 480 µs and p99 700 µs at 932 Mbps,
-//! where the driver's byte-limited buffer holds roughly one batch. 64-byte frames report p50
-//! 5,500 µs at 150 Mbps, because the same buffer holds far more small frames. The 64-byte figure
-//! is therefore a property of the transmitting NIC rather than of the cable, which is the same
-//! conclusion `bin/txbench.rs` reached about small-frame throughput on this hardware.
+//! What remains is the *driver's* buffer. `pcap_sendqueue_transmit` returns when the driver has
+//! accepted the batch, not when the wire has carried it, so the next probe can still be sitting
+//! behind the previous batch inside the NIC.
 //!
-//! Removing that last term needs either paced transmission - offering frames at the rate the link
+//! Measured on the reference rig:
+//!
+//! | Frame | Throughput | p50 | p99 |
+//! |---|---|---|---|
+//! | 1518 B | 900 Mbps | 520 µs | 780 µs |
+//! | 64 B | 188 Mbps | 3,700 µs | 5,900 µs |
+//!
+//! The 64-byte figure is a property of the transmitting NIC rather than of the cable - the same
+//! conclusion `bin/txbench.rs` reached about small-frame throughput on this hardware - because the
+//! driver's byte-limited buffer holds far more small frames than large ones.
+//!
+//! **The probe costs about 3.5% of throughput at 1518 bytes** (900 Mbps against 934 with the probe
+//! inside the batch), because interleaving a single-frame send with a batched one leaves a bubble
+//! in the driver's pipeline. That is the right way round to be wrong: throughput is understated by
+//! a known, stated amount, where the latency it buys back was overstated by 26% at minimum frame
+//! size with nothing on screen to say so. RFC 2544 measures throughput and latency in separate
+//! tests for exactly this reason, and splitting them is what Phase 5 should do.
+//!
+//! Removing the last term needs either paced transmission - offering frames at the rate the link
 //! sustains, so the driver's buffer never runs deep - or NIC hardware timestamping, which the plan
 //! records as the real answer and which neither adapter here provides.
 
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -330,13 +347,22 @@ impl Drop for Engine {
 /// has to distinguish runs that overlap in time on one wire.
 fn next_run_id() -> u16 {
     static NEXT: AtomicU16 = AtomicU16::new(0);
+    static SEED: OnceLock<u16> = OnceLock::new();
 
     // Seeded from the clock so a restarted process does not reuse the previous process's ids while
     // its frames may still be sitting in a driver buffer.
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.subsec_nanos() as u16)
-        .unwrap_or(0);
+    //
+    // Read once. Reading it per call made the id `counter + seed(call) + pid`, so two consecutive
+    // ids collided whenever the second clock read happened to be one lower than the first - about
+    // one adjacent pair in 65,536, since the nanosecond field is effectively uniform. That is
+    // exactly the condition the run id exists to prevent: two overlapping runs sharing an id count
+    // each other's frames as their own deliveries.
+    let seed = *SEED.get_or_init(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.subsec_nanos() as u16)
+            .unwrap_or(0)
+    });
 
     NEXT.fetch_add(1, Ordering::Relaxed)
         .wrapping_add(seed)
@@ -391,6 +417,7 @@ fn spawn_rx(
         guard(&counters, || {
             let mut local = LatencyHistogram::new();
             let mut since_publish = Instant::now();
+            let (mut last_received, mut last_dropped) = (0u32, 0u32);
 
             while running.load(Ordering::Acquire) {
                 match capture.next_packet() {
@@ -426,12 +453,23 @@ fn spawn_rx(
                 // taking a lock at a million frames a second would cost more than the measurement.
                 if since_publish.elapsed() >= SAMPLE_INTERVAL {
                     if let Ok(stats) = capture.stats() {
-                        counters
-                            .rx_frames
-                            .store(u64::from(stats.received), Ordering::Relaxed);
-                        counters
-                            .rx_capture_drops
-                            .store(u64::from(stats.dropped), Ordering::Relaxed);
+                        // Accumulated as wrapping 32-bit deltas, not widened as though each
+                        // snapshot were a 64-bit lifetime total. pcap's counters are 32 bits and
+                        // wrap: at 10 Gb/s with 64-byte frames that is roughly every five minutes,
+                        // and storing the raw snapshot would drop the receive count by 4.3 billion
+                        // at each wrap - throughput reading zero for a window and delivery ratios
+                        // corrupted for the rest of the run. A soak is exactly when this bites.
+                        counters.rx_frames.fetch_add(
+                            u64::from(stats.received.wrapping_sub(last_received)),
+                            Ordering::Relaxed,
+                        );
+                        counters.rx_capture_drops.fetch_add(
+                            u64::from(stats.dropped.wrapping_sub(last_dropped)),
+                            Ordering::Relaxed,
+                        );
+
+                        last_received = stats.received;
+                        last_dropped = stats.dropped;
                     }
                     // Merged rather than replaced, because the sampler clears the shared histogram
                     // when it takes a window and a wholesale copy would resurrect what it cleared.
@@ -471,19 +509,14 @@ fn spawn_tx(
             let mut seq = 0u32;
 
             while running.load(Ordering::Acquire) {
+                // The bulk of a batch carries no timestamp at all. A frame stamped on its way into
+                // the queue would report the time it spent waiting for the frames ahead of it,
+                // which measures this queue rather than the link - at 64 bytes that pushed both
+                // percentiles past the histogram's 10 ms ceiling with a healthy cable.
+                frame::stamp(&mut buffer, seq, frame::UNTIMED);
+
                 let mut queued = 0u64;
                 loop {
-                    // Only the first frame of the batch is timed. Every later one would carry the
-                    // time it spent waiting for the frames ahead of it, which measures this queue
-                    // rather than the link - and at 64 bytes that pushed both percentiles past the
-                    // histogram's 10 ms ceiling while the cable was fine.
-                    let sent_nanos = if queued == 0 {
-                        epoch.elapsed().as_nanos() as u64
-                    } else {
-                        frame::UNTIMED
-                    };
-
-                    frame::stamp(&mut buffer, seq, sent_nanos);
                     if queue.queue(None, &buffer).is_err() {
                         break;
                     }
@@ -491,15 +524,36 @@ fn spawn_tx(
                     queued += 1;
                 }
 
-                if queued == 0 || queue.transmit(&mut capture, SendSync::Off).is_err() {
+                if queued == 0 {
                     counters.record_fault(EngineFault::TransmitStopped);
                     break;
                 }
 
-                counters.tx_frames.fetch_add(queued, Ordering::Relaxed);
+                // One timed probe per batch, stamped and sent *after* the batch is assembled and
+                // immediately before it goes out. Stamping the batch's first frame instead put the
+                // CPU time spent building the whole batch into the latency figure - thousands of
+                // copies at minimum frame size, and more at every faster link - so the central
+                // measurement of this engine was systematically inflated by its own bookkeeping.
+                //
+                // Sent on its own rather than queued, because a queued probe cannot be re-stamped
+                // once pcap has copied it. This is also the shape RFC 2544 prescribes: latency
+                // belongs to a separate low-rate stream, not to the frames saturating the link.
+                frame::stamp(&mut buffer, seq, epoch.elapsed().as_nanos() as u64);
+                let probe = capture.sendpacket(buffer.as_slice()).is_ok();
+                if probe {
+                    seq = seq.wrapping_add(1);
+                }
+
+                if queue.transmit(&mut capture, SendSync::Off).is_err() {
+                    counters.record_fault(EngineFault::TransmitStopped);
+                    break;
+                }
+
+                let sent = queued + u64::from(probe);
+                counters.tx_frames.fetch_add(sent, Ordering::Relaxed);
                 counters
                     .tx_bytes
-                    .fetch_add(queued * wire_bytes, Ordering::Relaxed);
+                    .fetch_add(sent * wire_bytes, Ordering::Relaxed);
             }
         })
     })

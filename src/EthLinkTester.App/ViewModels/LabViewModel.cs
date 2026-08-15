@@ -412,15 +412,41 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             ReceiveAdapter.Mac);
     }
 
-    /// <summary>Reports that the engine stopped because it faulted rather than because it finished.</summary>
-    public void ReportFault()
+    /// <summary>
+    /// Tears the run down after the engine reported a fault, and says why.
+    /// </summary>
+    /// <remarks>
+    /// The teardown is the important half. A native fault stops one worker, not the run: the
+    /// engine's own <c>running</c> flag is untouched, so the transmitter carries on sending after
+    /// a capture failure and both adapters stay open. Setting <c>IsRunning</c> to false only stops
+    /// the telemetry pump and greys out the Stop button - it leaves traffic on the wire with no
+    /// control on screen that can end it, until another run starts or the app exits.
+    /// </remarks>
+    public async Task ReportFaultAsync()
     {
-        IsRunning = false;
-
-        // The engine's own account first. "Faulted" alone reads as one failure; a stopped capture
+        // Read before disposing: the description belongs to the engine being torn down.
+        //
+        // The engine's own account matters. "Faulted" alone reads as one failure; a stopped capture
         // and a stopped transmit mean opposite things about whether the numbers on screen are a
         // measurement of the cable.
-        ErrorMessage = _engine?.FaultDescription
+        var reason = _engine?.FaultDescription;
+
+        try
+        {
+            await DisposeEngineAsync();
+        }
+        catch (Exception ex)
+        {
+            // Nothing above this can handle it: the caller is an event handler, so an escaping
+            // exception terminates the process. An engine that will not shut down is worth
+            // reporting, and it is not worth taking the app down over.
+            reason = $"{reason} The engine also failed to shut down: {ex.Message}".TrimStart();
+            _engine = null;
+        }
+
+        IsRunning = false;
+        OnPropertyChanged(nameof(IsSimulated));
+        ErrorMessage = reason
             ?? "The engine faulted and the run was stopped. The readings above are stale.";
     }
 

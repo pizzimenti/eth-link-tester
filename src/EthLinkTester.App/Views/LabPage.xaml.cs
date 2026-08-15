@@ -59,7 +59,13 @@ public sealed partial class LabPage : Page, IDisposable
         await ViewModel.LoadAdaptersAsync();
     }
 
-    private void OnEngineFaulted(object? sender, EventArgs e) => ViewModel.ReportFault();
+    /// <summary>
+    /// <c>async void</c> because it is an event handler, which is the one place the pattern is
+    /// correct. <see cref="LabViewModel.ReportFaultAsync"/> handles its own failures, so nothing
+    /// can escape to terminate the process.
+    /// </summary>
+    private async void OnEngineFaulted(object? sender, EventArgs e) =>
+        await ViewModel.ReportFaultAsync();
 
     private void OnRunStarted(object? sender, EventArgs e)
     {
