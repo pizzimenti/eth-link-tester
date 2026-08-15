@@ -8,6 +8,14 @@
 //! That is not a theory here - `bin/wirecheck.rs` proves it against the reference rig, and its
 //! result is recorded in the repository so a regression is visible rather than assumed.
 
+pub mod engine;
+pub mod ffi;
+pub mod frame;
+pub mod histogram;
+pub mod ring;
+
+pub use engine::{Engine, RunConfig};
+
 /// Telemetry as the managed host reads it.
 ///
 /// Must stay byte-identical to `EthLinkTester.Core.Engine.TelemetrySample`, which pins the same

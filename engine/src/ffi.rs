@@ -1,0 +1,143 @@
+//! The C ABI the managed host calls.
+//!
+//! Every entry point catches panics. Unwinding across an FFI boundary is undefined behaviour, and
+//! the usual remedy for a cdylib is `panic = "abort"` - which is wrong for this system. The host
+//! process holds the restore journal and is the only thing that knows how to put a forced adapter
+//! back, so aborting would turn a recoverable engine bug into a NIC stranded at whatever speed the
+//! run set it to. Catching converts the same bug into a failed run that the host can recover from.
+
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+use crate::engine::{Engine, RunConfig};
+use crate::TelemetrySample;
+
+/// Result codes. Zero is success; everything else is a reason the host can report.
+pub const ELT_OK: i32 = 0;
+pub const ELT_ERR_NULL_ARGUMENT: i32 = -1;
+pub const ELT_ERR_BAD_UTF8: i32 = -2;
+pub const ELT_ERR_OPEN_FAILED: i32 = -3;
+pub const ELT_ERR_PANIC: i32 = -4;
+
+/// Opaque handle. The host never dereferences this.
+pub struct EngineHandle {
+    engine: Engine,
+}
+
+/// # Safety
+/// `tx_device` and `rx_device` must be NUL-terminated UTF-8. `tx_mac` and `rx_mac` must each point
+/// to six readable bytes. `out_handle` must be a writable pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn elt_engine_start(
+    tx_device: *const std::ffi::c_char,
+    rx_device: *const std::ffi::c_char,
+    tx_mac: *const u8,
+    rx_mac: *const u8,
+    frame_len: u32,
+    out_handle: *mut *mut EngineHandle,
+) -> i32 {
+    if tx_device.is_null() || rx_device.is_null() || tx_mac.is_null() || rx_mac.is_null() || out_handle.is_null() {
+        return ELT_ERR_NULL_ARGUMENT;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let tx = match unsafe { std::ffi::CStr::from_ptr(tx_device) }.to_str() {
+            Ok(text) => text.to_owned(),
+            Err(_) => return ELT_ERR_BAD_UTF8,
+        };
+        let rx = match unsafe { std::ffi::CStr::from_ptr(rx_device) }.to_str() {
+            Ok(text) => text.to_owned(),
+            Err(_) => return ELT_ERR_BAD_UTF8,
+        };
+
+        let mut tx_address = [0u8; 6];
+        let mut rx_address = [0u8; 6];
+        unsafe {
+            std::ptr::copy_nonoverlapping(tx_mac, tx_address.as_mut_ptr(), 6);
+            std::ptr::copy_nonoverlapping(rx_mac, rx_address.as_mut_ptr(), 6);
+        }
+
+        let config = RunConfig {
+            tx_device: tx,
+            rx_device: rx,
+            tx_mac: tx_address,
+            rx_mac: rx_address,
+            frame_len: frame_len as usize,
+        };
+
+        match Engine::start(config) {
+            Ok(engine) => {
+                let handle = Box::into_raw(Box::new(EngineHandle { engine }));
+                unsafe { *out_handle = handle };
+                ELT_OK
+            }
+            Err(_) => ELT_ERR_OPEN_FAILED,
+        }
+    }));
+
+    result.unwrap_or(ELT_ERR_PANIC)
+}
+
+/// Copies available samples into the caller's buffer.
+///
+/// Copying rather than lending a view into the ring. The plan called for the host to read the ring
+/// directly through a span over a raw pointer, which at 60 Hz and 64 bytes a sample saves four
+/// kilobytes a second - not worth one lifetime hazard reaching across an FFI boundary. A bulk copy
+/// of a whole batch still satisfies the constraint that mattered: no per-sample marshalling.
+///
+/// `out_dropped` receives the number of samples overwritten before the host reached them, so a gap
+/// in the history is visible rather than drawn across as though it were continuous.
+///
+/// # Safety
+/// `handle` must come from `elt_engine_start`. `samples` must be writable for `capacity` samples.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn elt_engine_drain(
+    handle: *mut EngineHandle,
+    samples: *mut TelemetrySample,
+    capacity: u32,
+    out_dropped: *mut u64,
+) -> i32 {
+    if handle.is_null() || samples.is_null() {
+        return ELT_ERR_NULL_ARGUMENT;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let handle = unsafe { &*handle };
+        let out = unsafe { std::slice::from_raw_parts_mut(samples, capacity as usize) };
+        let drained = handle.engine.ring().drain(out);
+
+        if !out_dropped.is_null() {
+            unsafe { *out_dropped = drained.dropped };
+        }
+
+        // Non-negative is a count; negative is a code. The host checks the sign.
+        i32::try_from(drained.count).unwrap_or(i32::MAX)
+    }));
+
+    result.unwrap_or(ELT_ERR_PANIC)
+}
+
+/// Stops the engine and frees the handle. Safe to call once per handle.
+///
+/// # Safety
+/// `handle` must come from `elt_engine_start` and must not be used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn elt_engine_stop(handle: *mut EngineHandle) -> i32 {
+    if handle.is_null() {
+        return ELT_ERR_NULL_ARGUMENT;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // Dropping stops the threads and joins them; the engine's Drop does the work.
+        drop(unsafe { Box::from_raw(handle) });
+        ELT_OK
+    }));
+
+    result.unwrap_or(ELT_ERR_PANIC)
+}
+
+/// The size the host must agree on. Checked at startup so a layout drift fails loudly at load
+/// rather than silently producing misaligned telemetry.
+#[unsafe(no_mangle)]
+pub extern "C" fn elt_sample_size() -> u32 {
+    core::mem::size_of::<TelemetrySample>() as u32
+}
