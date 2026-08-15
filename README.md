@@ -51,15 +51,18 @@ and a Realtek USB GbE adapter joined by one cable) are these:
 | | Result |
 |---|---|
 | Frames crossing the wire | 1000 sent, 1000 received, confirmed on **both** NICs' own hardware counters, with no reverse traffic |
-| 1518-byte frames | 934 Mbps sustained (94% of line rate), p50 450 µs, p99 700 µs, 99.8% delivered |
-| 64-byte frames | 181 Mbps (271k frames/s), p50 5.0 ms, p99 6.8 ms |
-| A link dropped mid-run | Reported as a fault within half a second, naming the cause |
+| 1518-byte frames | 900 Mbps sustained, p50 520 µs, p99 780 µs, 99.7% delivered |
+| 64-byte frames | 188 Mbps (280k frames/s), p50 3.7 ms, p99 5.9 ms |
+| A link dropped mid-run | Reported as a fault within half a second, naming the cause, and the run torn down |
 
-Two of those need a caveat the app repeats wherever it shows them. The 64-byte figures describe the
+Three caveats the app repeats wherever it shows these. The 64-byte figures describe the
 **transmitting NIC**, not the cable: the same cable measured in the other direction is four times
-faster, because the limit is the Killer's packet path. And the latency figures include the driver's
-own send buffer, so they bound cable latency rather than measuring it — closing that gap needs NIC
-hardware timestamping, which neither adapter here provides.
+faster, because the limit is the Killer's packet path. The latency figures still include the
+driver's own send buffer, so they bound cable latency rather than measuring it — closing that gap
+needs NIC hardware timestamping, which neither adapter here provides. And throughput is understated
+by roughly 3.5%, because the latency probe is sent separately from the bulk traffic and that leaves
+a bubble in the driver's pipeline; RFC 2544 measures the two in separate tests for exactly this
+reason, which is what Phase 5 will do.
 
 ## What it is not
 
