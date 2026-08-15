@@ -34,6 +34,38 @@ jobs:
           # global.json pins the SDK band, so this resolves to whatever the repo declares.
           global-json-file: global.json
 
+      # rust-toolchain.toml pins the compiler, so rustup installs what the repo declares rather
+      # than whatever the runner image happens to ship.
+      - name: Set up Rust
+        run: rustup show
+
+      # Npcap's runtime is a user-installed prerequisite its licence forbids redistributing, but
+      # the SDK is a plain zip and is all that linking needs. CI therefore builds the engine
+      # without installing a capture driver: unit tests here are pure logic - ring, histogram,
+      # frame parsing, layout - and anything needing a NIC runs on the bench rig instead.
+      - name: Fetch the Npcap SDK
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri 'https://npcap.com/dist/npcap-sdk-1.16.zip' -OutFile npcap-sdk.zip
+          Expand-Archive -Path npcap-sdk.zip -DestinationPath npcap-sdk -Force
+          $lib = (Resolve-Path npcap-sdk/Lib/x64).Path
+          Add-Content -Path $env:GITHUB_ENV -Value "LIB=$lib;$env:LIB"
+
+      - name: Build the engine
+        working-directory: engine
+        run: cargo build --release --locked
+
+      - name: Test the engine
+        working-directory: engine
+        run: cargo test --release --locked
+
+      # Warnings are failures here for the same reason they are in the managed build: the free
+      # signals are the cheapest defects to fix and the easiest to start ignoring.
+      - name: Lint the engine
+        working-directory: engine
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+
       - name: Restore
         run: dotnet restore
 

@@ -24,5 +24,10 @@ updates:
     schedule:
       interval: weekly
 
-  # A cargo entry for /engine belongs here once Phase 3 creates that directory. Declaring it
-  # early made Dependabot fail on every run against a path that does not exist.
+  # /engine exists as of Phase 3. Declaring this before the directory existed made Dependabot fail
+  # on every run, which is why it waited.
+  - package-ecosystem: cargo
+    directory: /engine
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
