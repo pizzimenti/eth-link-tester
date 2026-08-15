@@ -6,6 +6,59 @@
 //! machinery than twenty lines of parsing is worth. Nothing here is exported over the C ABI, so
 //! the cdylib is unaffected.
 
+/// Loads Npcap's libraries by absolute path, so a diagnostic binary runs from any shell.
+///
+/// Npcap installs into `System32\Npcap` rather than `System32`, and that directory is not on the
+/// default library search path. Without this the tools die the moment they first touch pcap, with
+/// exit code 53, no output, and no diagnostic - which is exactly how long it took to work out the
+/// first time. The managed host does the same thing for the same reason; see `NpcapLoader`.
+///
+/// Returns false when Npcap is not installed, which the caller should report in words.
+#[cfg(windows)]
+pub fn ensure_npcap() -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    unsafe extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut core::ffi::c_void;
+    }
+
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        return false;
+    };
+
+    // Packet.dll first: wpcap.dll depends on it, so loading it explicitly resolves that from a
+    // known path rather than from whatever the search order turns up.
+    ["Packet.dll", "wpcap.dll"].into_iter().all(|library| {
+        let path = std::path::Path::new(&root)
+            .join("System32")
+            .join("Npcap")
+            .join(library);
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // The handle is deliberately not kept: Windows reference-counts loaded modules and nothing
+        // here ever wants to unload one.
+        !unsafe { LoadLibraryW(wide.as_ptr()) }.is_null()
+    })
+}
+
+/// Exits with a readable message when Npcap is missing.
+#[cfg(windows)]
+pub fn require_npcap() {
+    if !ensure_npcap() {
+        eprintln!(
+            "Npcap is not installed, or not where this expects it \
+             (%SystemRoot%\\System32\\Npcap).\n\
+             Install it from https://npcap.com with WinPcap-compatible mode OFF."
+        );
+        std::process::exit(3);
+    }
+}
+
 /// Parses `AA-BB-CC-DD-EE-FF` or `aa:bb:cc:dd:ee:ff`.
 pub fn mac(text: &str) -> Option<[u8; 6]> {
     let mut out = [0u8; 6];

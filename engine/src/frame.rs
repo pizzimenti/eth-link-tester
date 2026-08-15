@@ -98,6 +98,30 @@ mod tests {
         assert_eq!(parse(&frame, 7), Some((4242, 1_234_567_890)));
     }
 
+    /// Destination first, then source. Swapping them builds a frame addressed to ourselves, which
+    /// a switch would flood and a direct link would simply never deliver - and nothing else in the
+    /// engine would notice, because the receive count would just read zero.
+    #[test]
+    fn the_destination_comes_before_the_source() {
+        let frame = build([0xAA; 6], [0xBB; 6], MIN_BUFFER, 1);
+
+        assert_eq!(
+            &frame[DST], &[0xAA; 6],
+            "destination is the first six bytes"
+        );
+        assert_eq!(&frame[SRC], &[0xBB; 6], "source is the next six");
+    }
+
+    /// EtherType is big-endian on the wire. Writing it little-endian produces 0xB588, which is not
+    /// an experimental ethertype, and the kernel filter would then match nothing - a run that
+    /// transmits perfectly and receives zero, reported as total packet loss.
+    #[test]
+    fn the_ethertype_is_big_endian_on_the_wire() {
+        let frame = build([0; 6], [0; 6], MIN_BUFFER, 1);
+
+        assert_eq!(&frame[ETHERTYPE], &[0x88, 0xB5]);
+    }
+
     #[test]
     fn a_short_buffer_is_padded_to_a_legal_frame() {
         assert_eq!(build([0; 6], [0; 6], 10, 1).len(), MIN_BUFFER);

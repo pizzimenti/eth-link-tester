@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use ethlink_engine::diag::{device, mac};
+use ethlink_engine::diag::{device, mac, require_npcap};
 use ethlink_engine::{Engine, RunConfig, TelemetrySample};
 
 fn main() {
@@ -17,6 +17,7 @@ fn main() {
         );
         std::process::exit(2);
     }
+    require_npcap();
 
     let frame_len: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(1514);
     let seconds: u64 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(5);

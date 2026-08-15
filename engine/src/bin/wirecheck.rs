@@ -13,7 +13,7 @@
 use std::env;
 use std::time::{Duration, Instant};
 
-use ethlink_engine::diag::{device, mac};
+use ethlink_engine::diag::{device, mac, require_npcap};
 use ethlink_engine::{frame, PROBE_ETHERTYPE};
 
 /// Minimum Ethernet frame, less the FCS the NIC appends.
@@ -29,6 +29,8 @@ fn main() {
         eprintln!("usage: wirecheck <tx-guid> <rx-guid> <tx-mac> <rx-mac> [count]");
         std::process::exit(2);
     }
+    require_npcap();
+
     let tx_mac = mac(&args[3]).expect("bad TX MAC");
     let rx_mac = mac(&args[4]).expect("bad RX MAC");
     let count: u32 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);

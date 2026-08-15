@@ -26,7 +26,7 @@
 
 use std::time::Instant;
 
-use ethlink_engine::diag::{device, mac};
+use ethlink_engine::diag::{device, mac, require_npcap};
 use ethlink_engine::{frame, WIRE_OVERHEAD_BYTES};
 use pcap::sendqueue::{SendQueue, SendSync};
 
@@ -48,6 +48,8 @@ fn main() {
         eprintln!("usage: txbench <tx-guid> <tx-mac> <rx-mac> [seconds-per-size]");
         std::process::exit(2);
     }
+    require_npcap();
+
     let seconds: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(2.0);
     let src = mac(&args[2]).expect("bad source MAC");
     let dst = mac(&args[3]).expect("bad destination MAC");

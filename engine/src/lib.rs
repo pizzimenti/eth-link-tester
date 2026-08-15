@@ -66,9 +66,40 @@ mod tests {
 
     /// The managed side pins this at 64 bytes with fields at 0,8,16,24,32,40,48,56. If this fails,
     /// the FFI contract is broken and the host will read misaligned garbage.
+    ///
+    /// Every field's offset is asserted, not just the total size. Swapping two same-width fields -
+    /// transmit and receive throughput, say - keeps the struct exactly 64 bytes and every
+    /// alignment intact, so a size check passes while the app plots each direction's rate under
+    /// the other's name. Nothing would fail to compile and the numbers would look entirely
+    /// plausible.
     #[test]
     fn telemetry_sample_matches_the_managed_layout() {
         assert_eq!(core::mem::size_of::<TelemetrySample>(), 64);
         assert_eq!(core::mem::align_of::<TelemetrySample>(), 8);
+
+        let sample = TelemetrySample::default();
+        let base = &sample as *const _ as usize;
+        let offset = |field: *const _| field as usize - base;
+
+        assert_eq!(offset(&sample.timestamp_ticks as *const _ as *const u8), 0);
+        assert_eq!(
+            offset(&sample.tx_megabits_per_second as *const _ as *const u8),
+            8
+        );
+        assert_eq!(
+            offset(&sample.rx_megabits_per_second as *const _ as *const u8),
+            16
+        );
+        assert_eq!(
+            offset(&sample.latency_p50_microseconds as *const _ as *const u8),
+            24
+        );
+        assert_eq!(
+            offset(&sample.latency_p99_microseconds as *const _ as *const u8),
+            32
+        );
+        assert_eq!(offset(&sample.tx_frames as *const _ as *const u8), 40);
+        assert_eq!(offset(&sample.rx_frames as *const _ as *const u8), 48);
+        assert_eq!(offset(&sample.rx_errors as *const _ as *const u8), 56);
     }
 }
