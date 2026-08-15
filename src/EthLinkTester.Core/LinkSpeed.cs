@@ -53,9 +53,11 @@ public static class LinkSpeedExtensions
     };
 
     /// <summary>
-    /// Auto-negotiation cannot be bypassed at or above 1000BASE-T: IEEE 802.3 Clause 40
-    /// requires it to resolve master/slave clock roles. Drivers that appear to offer a forced
-    /// 1 Gbps setting are restricting advertised capability, not disabling negotiation.
+    /// Auto-negotiation cannot be bypassed at or above 1000BASE-T: 802.3 requires it to resolve
+    /// master/slave clock roles, in Clause 40 for 1000BASE-T, Clause 126 for 2.5G and 5GBASE-T,
+    /// and Clause 55 for 10GBASE-T, over the Clause 28 negotiation base. Drivers that appear to
+    /// offer a forced 1 Gbps setting are restricting advertised capability, not disabling
+    /// negotiation.
     /// </summary>
     public static bool RequiresAutoNegotiation(this LinkSpeed speed) => speed >= LinkSpeed.Mbps1000;
 

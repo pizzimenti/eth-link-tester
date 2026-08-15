@@ -40,7 +40,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     private readonly FileRestoreJournal? _ownedJournal;
 
     public RigViewModel()
-        : this(new WindowsAdapterProvider(), new FileRestoreJournal(DefaultJournalPath), new WindowsNpcapProbe())
+        : this(new WindowsAdapterProvider(), new FileRestoreJournal(DefaultJournalPath, location: new WindowsJournalLocation()), new WindowsNpcapProbe())
     {
     }
 
@@ -215,6 +215,17 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     private static string DescribeRecovery(RestoreOutcome outcome)
     {
         var parts = new List<string>();
+
+        if (outcome.Rejected.Count > 0)
+        {
+            parts.Add(
+                $"{outcome.Rejected.Count} journal entr" +
+                $"{(outcome.Rejected.Count == 1 ? "y names a value" : "ies name values")} this app " +
+                "did not record, so " +
+                $"{(outcome.Rejected.Count == 1 ? "it was" : "they were")} discarded rather than " +
+                $"applied to the adapters ({string.Join("; ", outcome.Rejected)}). On a correctly " +
+                "permissioned machine this should not happen.");
+        }
 
         if (outcome.UnreadableRecords > 0)
         {

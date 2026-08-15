@@ -126,11 +126,50 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         var restored = new List<PendingRestore>();
         var abandoned = new List<PendingRestore>();
         var failures = new List<RestoreFailure>();
+        var rejected = new List<RestoreFailure>();
+
+        // One property read per adapter, not per entry. A read costs ~57 ms against the CIM
+        // provider, and a run that touched several properties on one adapter paid it for each.
+        var propertiesByAdapter = new Dictionary<string, IReadOnlyList<AdapterProperty>>(
+            StringComparer.OrdinalIgnoreCase);
 
         foreach (var entry in OriginalValues(pending.Entries))
         {
             try
             {
+                // Validated against the driver's own options, exactly as ApplyAsync does. Restore
+                // used to write the recorded value straight through, which trusted the journal
+                // file's contents completely - and the journal is a file on disk, so that trust
+                // was only ever as strong as its permissions. A value the driver does not offer
+                // cannot be one this app recorded, whatever the file says.
+                if (!propertiesByAdapter.TryGetValue(entry.AdapterId, out var properties))
+                {
+                    properties = await _writer.ReadPropertiesAsync(entry.AdapterId, cancellationToken)
+                        .ConfigureAwait(false);
+                    propertiesByAdapter[entry.AdapterId] = properties;
+                }
+
+                var property = Find(properties, entry.AdapterId, entry.PropertyKeyword);
+
+                if (!property.Accepts(entry.OriginalValue))
+                {
+                    // Reported once, then dropped. Retrying cannot help - the driver will never
+                    // accept this value - so keeping it would fail on every launch forever and
+                    // leave the user a permanent alarm they have no way to clear. That is the same
+                    // poisoned-entry trap as vanished hardware, and an entry this app did not
+                    // write is precisely the one there is no reason to preserve.
+                    rejected.Add(new RestoreFailure
+                    {
+                        Entry = entry,
+                        Reason =
+                            $"'{entry.OriginalValue}' is not a value {entry.PropertyKeyword} " +
+                            "accepts, so the journal entry did not come from this app.",
+                    });
+
+                    abandoned.Add(entry);
+                    continue;
+                }
+
                 await _writer.WriteAsync(
                     entry.AdapterId, entry.PropertyKeyword, entry.OriginalValue, cancellationToken)
                     .ConfigureAwait(false);
@@ -176,6 +215,7 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
             Restored = restored,
             Failures = failures,
             Abandoned = abandoned,
+            Rejected = rejected,
             UnreadableRecords = pending.UnreadableLines,
             JournalCleared = afterwards.IsEmpty,
         };
@@ -201,9 +241,13 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         var properties = await _writer.ReadPropertiesAsync(adapterId, cancellationToken)
             .ConfigureAwait(false);
 
-        return properties.FirstOrDefault(
+        return Find(properties, adapterId, keyword);
+    }
+
+    private static AdapterProperty Find(
+        IReadOnlyList<AdapterProperty> properties, string adapterId, string keyword) =>
+        properties.FirstOrDefault(
                 p => string.Equals(p.Keyword, keyword, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException(
                 $"Adapter '{adapterId}' has no advanced property '{keyword}'.");
-    }
 }

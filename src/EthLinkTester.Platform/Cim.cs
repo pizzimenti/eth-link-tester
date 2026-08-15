@@ -132,11 +132,15 @@ internal static class Cim
     /// Every counter and speed on this provider is <c>UInt64</c>, so a value above
     /// <see cref="long.MaxValue"/> is representable by the source and not by the destination.
     /// NDIS defines <c>NDIS_LINK_SPEED_UNKNOWN</c> as 0xFFFFFFFFFFFFFFFF for exactly the case
-    /// this app cares about - a link that is down - and converting it throws. On the reference
-    /// hardware the property comes back null instead, so this is a guard against drivers not yet
-    /// seen rather than an observed failure; the cost of being wrong is that adapter enumeration
-    /// throws for every adapter on the machine. Zero is the right answer because callers already
-    /// read it as "unknown".
+    /// this app cares about - a link that is down - and converting it throws.
+    /// <para>
+    /// It does not appear on the reference hardware. Both down-states were tested against the
+    /// live rig, not just one: administratively disabled, and the cable physically pulled with the
+    /// adapter still enabled. Both report <c>Speed</c> as null. So this is a guard against drivers
+    /// not yet seen rather than an observed failure - kept because the cost of being wrong is that
+    /// enumeration throws for every adapter on the machine, and zero is the right answer since
+    /// callers already read it as "unknown".
+    /// </para>
     /// </remarks>
     public static long ToLong(object? value) => value switch
     {

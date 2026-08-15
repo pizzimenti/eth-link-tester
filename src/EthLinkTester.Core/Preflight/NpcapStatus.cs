@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace EthLinkTester.Core.Preflight;
 
 /// <summary>Whether the capture driver can carry a run, and if not, why not.</summary>
@@ -36,7 +38,7 @@ public enum NpcapReadiness
 /// deliberate - contributors can work on the UI with no capture driver and no second NIC.
 /// </para>
 /// </remarks>
-public sealed record NpcapStatus
+public sealed partial record NpcapStatus
 {
     /// <summary>
     /// The oldest release this app will vouch for.
@@ -76,7 +78,12 @@ public sealed record NpcapStatus
     /// In that mode Npcap replaces the system-wide WinPcap DLLs rather than installing alongside
     /// them. Any other application on the machine expecting WinPcap silently binds to Npcap
     /// instead, so a fault introduced here surfaces somewhere unrelated - and this app cannot tell
-    /// which library it is actually talking to. The installer offers it unchecked by default.
+    /// which library it is actually talking to.
+    /// <para>
+    /// The installer ships this option <b>ticked</b> - observed directly on 1.88 while installing
+    /// it here. Earlier guidance in this file said the opposite, which would have walked a user
+    /// straight into the one configuration the app documents as unusable.
+    /// </para>
     /// </remarks>
     public bool WinPcapCompatibilityMode { get; init; }
 
@@ -119,9 +126,10 @@ public sealed record NpcapStatus
     {
         NpcapReadiness.Ready => null,
         NpcapReadiness.NotInstalled =>
-            $"Install Npcap from {DownloadUrl}. Leave \"WinPcap API-compatible mode\" unchecked - " +
-            "it is off by default. Npcap cannot be bundled with this app because its licence does " +
-            "not permit redistribution.",
+            $"Install Npcap from {DownloadUrl}. On the installer's options page, <b>untick</b> " +
+            "\"Install Npcap in WinPcap API-compatible Mode\" - it is ticked by default, and this " +
+            "app cannot use it. Npcap cannot be bundled here because its licence does not permit " +
+            "redistribution.",
         NpcapReadiness.ServiceStopped =>
             "Start the npcap service, or reboot. Installing Npcap without restarting leaves it " +
             "stopped until the driver loads.",
@@ -138,6 +146,48 @@ public sealed record NpcapStatus
             "this state, and starting the service will not help.",
         _ => null,
     };
+
+    /// <summary>
+    /// Parses a version from any of the forms Npcap has shipped, or null when there is none.
+    /// </summary>
+    /// <remarks>
+    /// One parser for every source - registry, uninstall entry, file resources - because a version
+    /// check fails asymmetrically: a value it cannot read becomes "unknown", and
+    /// <see cref="Readiness"/> treats unknown as <see cref="NpcapReadiness.Ready"/>. So a format it
+    /// rejects silently disables the minimum-version gate for exactly the builds that gate exists
+    /// to catch. Npcap's older releases used suffixes like <c>0.99-r9</c>, which
+    /// <see cref="Version.TryParse(string, out Version)"/> refuses outright, so the numeric prefix
+    /// is taken first.
+    /// <para>
+    /// In Core rather than the Windows probe because parsing a version string is not a platform
+    /// concern, and here it can be tested against the forms that actually caused trouble.
+    /// </para>
+    /// </remarks>
+    public static Version? ParseVersion(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var match = NumericPrefix().Match(text.Trim());
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        // Version needs at least major.minor; a bare "1" is legitimate in a resource.
+        var numbers = match.Value.Contains('.', StringComparison.Ordinal)
+            ? match.Value
+            : match.Value + ".0";
+
+        return Version.TryParse(numbers, out var parsed) && parsed != new Version(0, 0)
+            ? parsed
+            : null;
+    }
+
+    [GeneratedRegex(@"^\d+(\.\d+)*")]
+    private static partial Regex NumericPrefix();
 
     /// <summary>The state of a machine with no capture driver at all.</summary>
     public static NpcapStatus Absent { get; } = new() { Installed = false };

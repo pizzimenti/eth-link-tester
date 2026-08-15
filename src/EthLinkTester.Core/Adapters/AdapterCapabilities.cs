@@ -92,7 +92,7 @@ public sealed record AdapterCapabilities
     /// </summary>
     /// <remarks>
     /// The distinction is the whole point. A driver's fixed-setting list is authoritative only
-    /// below gigabit: 802.3 Clause 40 forbids forcing 1000BASE-T and above, so every adapter
+    /// below gigabit: 802.3 forbids forcing 1000BASE-T and above, so every adapter
     /// omits those regardless of what it supports, and reading that omission as denial would rule
     /// out the tier on hardware that runs it daily.
     /// <para>

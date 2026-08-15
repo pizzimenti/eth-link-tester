@@ -51,10 +51,14 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
     /// </remarks>
     private int _inFlight;
 
-    public FileRestoreJournal(string path, string? mutexName = null)
+    private readonly IJournalLocation? _location;
+
+    public FileRestoreJournal(
+        string path, string? mutexName = null, IJournalLocation? location = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         _path = path;
+        _location = location;
 
         // Session-local rather than Global: the case that matters is two instances run by the
         // same user, and a Global mutex needs privileges that would make the journal untestable
@@ -76,12 +80,6 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         return WithLockAsync(
             () =>
             {
-                var directory = System.IO.Path.GetDirectoryName(_path);
-                if (!string.IsNullOrEmpty(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
                 RepairUnterminatedTail();
                 Append(Serialize(entry));
             },
@@ -295,6 +293,41 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
         };
     }
 
+    /// <summary>
+    /// Creates the journal's directory and restricts it to administrators.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Runs before <em>every</em> operation, not only before writing. Securing the write path
+    /// alone left the hole exactly where the attack is: %ProgramData% grants standard users
+    /// WriteData on the directory, so anyone can create a journal when none exists - and the
+    /// journal is deleted after every clean restore, so "none exists" is the usual state. The
+    /// elevated app then reads that planted file at startup and applies it to hardware. Recovery
+    /// never records anything, so a machine that has only ever recovered would never have been
+    /// secured at all.
+    /// </para>
+    /// <para>
+    /// A location that cannot be secured throws rather than degrading quietly: an unprotected
+    /// journal is not a weaker safety net, it is an attack surface.
+    /// </para>
+    /// </remarks>
+    private void EnsureDirectory()
+    {
+        var directory = System.IO.Path.GetDirectoryName(_path);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return;
+        }
+
+        if (_location is null)
+        {
+            Directory.CreateDirectory(directory);
+            return;
+        }
+
+        _location.Secure(directory);
+    }
+
     /// <summary>Whether the file ends without a record terminator.</summary>
     private bool EndsMidRecord()
     {
@@ -480,6 +513,7 @@ public sealed class FileRestoreJournal : IRestoreJournal, IDisposable
 
                 try
                 {
+                    EnsureDirectory();
                     return operation();
                 }
                 finally

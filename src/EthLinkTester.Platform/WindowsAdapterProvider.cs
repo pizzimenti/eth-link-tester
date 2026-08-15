@@ -105,6 +105,12 @@ public sealed class WindowsAdapterProvider : IAdapterProvider
                 // and watching the instance disappear rather than zero out. That is a routine
                 // state the user can enter at any moment, so it is a null sample to skip, not an
                 // exception to crash a polling loop.
+                //
+                // Disabled is not the same as unplugged, and the difference is only visible here.
+                // Pulling the cable with the adapter still enabled leaves the instance in place
+                // and its counters readable - measured at 726,257 received bytes on a NIC with no
+                // link - so an unplugged adapter keeps polling normally and only a disabled one
+                // yields null.
                 if (statistics is null)
                 {
                     return null;

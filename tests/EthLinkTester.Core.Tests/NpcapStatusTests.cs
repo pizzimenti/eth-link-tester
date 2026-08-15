@@ -17,6 +17,54 @@ public class NpcapStatusTests
             WinPcapCompatibilityMode = winPcapMode,
         };
 
+    /// <summary>
+    /// Every form Npcap has actually shipped a version in. The suffixed ones are the point:
+    /// Version.TryParse refuses them outright, and a version this cannot read becomes "unknown",
+    /// which Readiness treats as Ready - silently disabling the minimum-version gate for exactly
+    /// the ancient builds it exists to catch.
+    /// </summary>
+    [Theory]
+    [InlineData("1.88", "1.88")]
+    [InlineData("0.99-r9", "0.99")]
+    [InlineData("0.9985", "0.9985")]
+    [InlineData("1.10.6", "1.10.6")]
+    [InlineData("1.79 build 2024", "1.79")]
+    [InlineData("5", "5.0")]
+    public void ParsesEveryVersionFormNpcapHasShipped(string text, string expected) =>
+        Assert.Equal(Version.Parse(expected), NpcapStatus.ParseVersion(text));
+
+    /// <summary>
+    /// Unparseable must stay null rather than becoming a zero that would read as a real version
+    /// and fail the minimum check for the wrong reason.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("unknown")]
+    [InlineData("r9")]
+    [InlineData("0.0")]
+    public void RefusesWhatItCannotRead(string? text) =>
+        Assert.Null(NpcapStatus.ParseVersion(text));
+
+    /// <summary>
+    /// The regression that matters: an old build must still be caught as too old after parsing,
+    /// not waved through because its version string had a suffix.
+    /// </summary>
+    [Fact]
+    public void ASuffixedAncientVersionIsStillTooOld()
+    {
+        var status = new NpcapStatus
+        {
+            Installed = true,
+            DriverFilesPresent = true,
+            ServiceRunning = true,
+            Version = NpcapStatus.ParseVersion("0.99-r9"),
+        };
+
+        Assert.Equal(NpcapReadiness.TooOld, status.Readiness);
+    }
+
     [Fact]
     public void AWorkingInstallationIsReady()
     {

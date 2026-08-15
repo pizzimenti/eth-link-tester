@@ -28,6 +28,24 @@ internal sealed class StripChart : UserControl
     /// </summary>
     private const int CapacitySamples = 1_200;
 
+    /// <summary>
+    /// The x-axis is sample index multiplied by this, <b>not</b> elapsed time.
+    /// </summary>
+    /// <remarks>
+    /// A known limitation, deliberately left until Phase 3 rather than guessed at now. Every
+    /// sample carries a real monotonic <c>TelemetrySample.TimestampTicks</c> and this control
+    /// discards it, so screen-time equals wall-clock only while the producer runs at exactly this
+    /// rate. Two ways that breaks on an instrument: a native engine whose sample rate drifts, and
+    /// a ring-buffer overflow, where the samples following a dropped window are appended with no
+    /// gap marker - so a stretch of screen silently represents more history than it appears to.
+    /// <para>
+    /// Not fixed here because it cannot be validated here. The only producer today is the
+    /// simulator, which emits at exactly this rate by construction, so a time-indexed axis would
+    /// be untestable code written against a source that can never exercise it. Phase 3 brings both
+    /// the varying rate and the overflow signal that make the fix verifiable, and it is tracked as
+    /// engine work rather than chart work for that reason.
+    /// </para>
+    /// </remarks>
     private const double SampleIntervalSeconds = 1.0 / 60.0;
     private const float SeriesLineWidth = 2;
 
