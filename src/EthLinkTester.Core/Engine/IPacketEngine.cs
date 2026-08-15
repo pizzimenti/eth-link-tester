@@ -55,6 +55,18 @@ public interface IPacketEngine : IAsyncDisposable
     ValueTask StopAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Samples the engine produced that this consumer never collected, cumulative for the run.
+    /// </summary>
+    /// <remarks>
+    /// Not frame loss - no traffic is affected, and a run with a large count here is still a valid
+    /// measurement. It matters because the history has a hole: a chart that cannot distinguish a
+    /// gap from continuity draws a line straight across it, so a stretch of screen silently
+    /// represents more elapsed time than it appears to. The count is what lets the consumer mark
+    /// the gap instead.
+    /// </remarks>
+    long DroppedSamples { get; }
+
+    /// <summary>
     /// Copies pending samples into <paramref name="destination"/> and returns how many were
     /// written. Returns 0 when the engine is idle or nothing new has accumulated.
     /// </summary>

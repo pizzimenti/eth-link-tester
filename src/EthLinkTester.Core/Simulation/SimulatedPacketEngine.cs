@@ -110,6 +110,15 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         return ValueTask.CompletedTask;
     }
 
+    private long _droppedSamples;
+
+    /// <summary>
+    /// Samples discarded because the consumer fell behind. The simulator models this because the
+    /// native engine's ring genuinely overwrites, and a consumer that only ever meets a
+    /// well-behaved producer will not have handled the case when it meets a real one.
+    /// </summary>
+    public long DroppedSamples => _droppedSamples;
+
     public int Drain(Span<TelemetrySample> destination)
     {
         if (State != EngineState.Running || _settings is null || destination.IsEmpty)
@@ -144,6 +153,7 @@ public sealed class SimulatedPacketEngine : IPacketEngine
             var dropped = due - MaxBacklogSamples;
             AccrueCounters(dropped, interval);
             _lastSampleTimestamp += dropped * timestampPerSample;
+            _droppedSamples += dropped;
             due = MaxBacklogSamples;
         }
 
