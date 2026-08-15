@@ -20,4 +20,10 @@ pcap = "2"
 # whole signal a marginal cable shows up in.
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+
+# Deliberately NOT panic = "abort", which is the usual advice for a cdylib. Unwinding across an FFI
+# boundary is undefined behaviour, so every extern "C" entry point catches instead - see the ffi
+# module. Aborting would be safe for the engine and wrong for the system: the managed host is the
+# only thing that knows how to put a forced adapter back, and killing the process mid-run strands
+# the NIC at whatever speed the run set it to. An engine bug must fail the run, not the recovery.
+panic = "unwind"
