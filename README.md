@@ -45,8 +45,10 @@ your hardware can actually reach.
 ## What has actually been measured
 
 The central claim — that Npcap injection reaches copper — is not taken on trust. `engine/src/bin/`
-holds the three tools that established it, and their results on the reference rig (a Killer E2400
-and a Realtek USB GbE adapter joined by one cable) are these:
+holds the tools that established it — `wirecheck` proves frames cross, `txbench` finds the transmit
+ceiling, `enginerun` drives the whole engine, and `abicheck` calls the C ABI the way a buggy host
+would — and their results on the reference rig (a Killer E2400 and a Realtek USB GbE adapter joined
+by one cable) are these:
 
 | | Result |
 |---|---|
