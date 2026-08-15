@@ -45,9 +45,20 @@ jobs:
       # frame parsing, layout - and anything needing a NIC runs on the bench rig instead.
       - name: Fetch the Npcap SDK
         shell: pwsh
+        # The archive is checked before it is opened. The URL is not content-addressed, so this is
+        # the only thing standing between a build and whatever that host serves - and the failure
+        # without it is not obvious: a truncated download expands to a partial Lib directory and
+        # surfaces as an unresolved-symbol error that reads like a code problem.
         run: |
+          $expected = 'F0A8BE7778EE3AE1B99BBBECB27A3FF0F6C111A4093F1C78C5C5A099607184DB'
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri 'https://npcap.com/dist/npcap-sdk-1.16.zip' -OutFile npcap-sdk.zip
+
+          $actual = (Get-FileHash npcap-sdk.zip -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "npcap-sdk-1.16.zip is not what this repository pinned.`n  expected $expected`n  got      $actual"
+          }
+
           Expand-Archive -Path npcap-sdk.zip -DestinationPath npcap-sdk -Force
           $lib = (Resolve-Path npcap-sdk/Lib/x64).Path
           Add-Content -Path $env:GITHUB_ENV -Value "LIB=$lib;$env:LIB"
