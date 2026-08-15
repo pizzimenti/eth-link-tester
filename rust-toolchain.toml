@@ -1,0 +1,7 @@
+# Pins the compiler for reproducible builds, and so SunUp cannot move it underneath us: rustup
+# fetches what this file declares rather than whatever winget last installed. The same reasoning as
+# global.json for the .NET SDK and Directory.Packages.props for NuGet.
+[toolchain]
+channel = "1.97.1"
+targets = ["x86_64-pc-windows-msvc"]
+components = ["rustfmt", "clippy"]

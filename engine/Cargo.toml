@@ -1,0 +1,23 @@
+[package]
+name = "ethlink-engine"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT"
+description = "Raw L2 traffic engine for eth-link-tester"
+
+# cdylib for the C# host to P/Invoke; rlib so the verification binaries can link it directly.
+[lib]
+name = "ethlink_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pcap = "2"
+
+[profile.release]
+# The measurement loop must not be interrupted by work the optimiser could have done. Full LTO and
+# a single codegen unit cost build time, which nobody measures, and buy tail latency, which is the
+# whole signal a marginal cable shows up in.
+lto = "fat"
+codegen-units = 1
+panic = "abort"
