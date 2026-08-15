@@ -1,5 +1,9 @@
 # ---- .NET ----
 bin/
+# Rust puts source in src/bin/, which the .NET rule above silently swallowed - the verification
+# binaries went uncommitted for a whole phase while a commit message claimed they were tracked.
+!engine/src/bin/
+!engine/src/bin/**
 obj/
 [Dd]ebug/
 [Rr]elease/

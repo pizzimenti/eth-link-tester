@@ -1,10 +1,14 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Net.NetworkInformation;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using EthLinkTester.Core;
+using EthLinkTester.Core.Adapters;
 using EthLinkTester.Core.Engine;
 using EthLinkTester.Core.Simulation;
+using EthLinkTester.Platform;
 using Microsoft.UI.Xaml;
 
 namespace EthLinkTester.App.ViewModels;
@@ -13,14 +17,33 @@ namespace EthLinkTester.App.ViewModels;
 internal sealed record LinkSpeedOption(LinkSpeed Value, string Label);
 
 /// <summary>
+/// One end of the rig: an adapter the engine can open, with its MAC already parsed.
+/// </summary>
+/// <remarks>
+/// The MAC is carried as bytes rather than re-parsed at start, so an adapter whose address the
+/// framework cannot read is excluded from the list instead of failing when the user presses Start.
+/// </remarks>
+internal sealed record AdapterOption(string Id, string Label, byte[] Mac, LinkSpeed? NegotiatedSpeed);
+
+/// <summary>Where a run's numbers come from.</summary>
+internal enum EngineSource
+{
+    /// <summary>Real frames across real copper.</summary>
+    Hardware,
+
+    /// <summary>Synthesised. Debug builds only.</summary>
+    Simulated,
+}
+
+/// <summary>
 /// Drives the Lab Mode live view.
 /// </summary>
 /// <remarks>
 /// <para>
-/// In v0.1.0 the only engine available is the simulator, so this deliberately exposes the
-/// simulation profile as a first-class control: being able to watch what a marginal cable looks
-/// like next to a healthy one is the whole reason the simulator models fault signatures rather
-/// than just emitting pleasant noise.
+/// Two engines sit behind the same interface: the native one, which puts frames on a cable, and
+/// the simulator, which is compiled into Debug builds only so the whole UI is developable with no
+/// NICs and no Npcap. Which one ran is stated permanently on screen rather than inferred, because
+/// a plausible chart that never touched a cable is worse than no chart at all.
 /// </para>
 /// <para>
 /// Observable members are declared as <c>partial</c> properties rather than annotated fields.
@@ -40,12 +63,21 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     private static readonly LinkSpeedOption[] AllLinkSpeeds =
         [.. Enum.GetValues<LinkSpeed>().Select(s => new LinkSpeedOption(s, s.ShortName()))];
 
+    /// <summary>
+    /// The RFC 2544 sweep, which is what a report has to quote against. 64 bytes is the stress
+    /// case: it maximises frames per second rather than bits per second, and on this rig it is the
+    /// only size that does not reach line rate.
+    /// </summary>
+    private static readonly int[] AllFrameSizes = [64, 128, 256, 512, 1024, 1280, 1518];
+
+    private readonly IAdapterProvider _provider;
+
     [SuppressMessage(
         "Performance",
         "CA1859:Use concrete types when possible for improved performance",
-        Justification = "The interface is the point. The simulated engine is a stand-in for the " +
-                        "native one arriving in Phase 3, and narrowing this field would let " +
-                        "simulator-only assumptions leak into the view model.")]
+        Justification = "The interface is the point. Two implementations are selected between at " +
+                        "run time, and narrowing this field would let one's assumptions leak into " +
+                        "the view model.")]
     private IPacketEngine? _engine;
 
     private bool _disposed;
@@ -61,6 +93,25 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial LinkSpeed LinkSpeed { get; set; }
+
+    [ObservableProperty]
+    public partial int FrameBytes { get; set; }
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(StartCommand))]
+    [NotifyPropertyChangedFor(nameof(SimulationVisibility))]
+    [NotifyPropertyChangedFor(nameof(RigVisibility))]
+    [NotifyPropertyChangedFor(nameof(LinkSpeedIsChosen))]
+    public partial EngineSource Source { get; set; }
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(StartCommand))]
+    [NotifyPropertyChangedFor(nameof(LinkSpeedIsChosen))]
+    public partial AdapterOption? TransmitAdapter { get; set; }
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(StartCommand))]
+    public partial AdapterOption? ReceiveAdapter { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TxDisplay))]
@@ -79,8 +130,20 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     public partial double LatencyP99Microseconds { get; set; }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(RxErrorsDisplay))]
-    public partial long RxErrors { get; set; }
+    [NotifyPropertyChangedFor(nameof(CaptureDropsDisplay))]
+    public partial long CaptureDrops { get; set; }
+
+    /// <summary>
+    /// Telemetry windows the consumer never collected, cumulative for the run.
+    /// </summary>
+    /// <remarks>
+    /// Shown rather than logged because a chart cannot tell a gap from continuity and will draw a
+    /// line straight across one. Non-zero means a stretch of the plot covers more elapsed time
+    /// than its width suggests.
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TelemetryGapsDisplay))]
+    public partial long TelemetryGaps { get; set; }
 
     [ObservableProperty]
     public partial long TxFrames { get; set; }
@@ -92,6 +155,8 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
 
+    public ObservableCollection<AdapterOption> Adapters { get; } = [];
+
     /// <summary>
     /// False in release builds, where simulation is compiled out.
     /// </summary>
@@ -102,28 +167,58 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         false;
 #endif
 
+    public static IReadOnlyList<EngineSource> Sources => SimulationAvailable
+        ? [EngineSource.Hardware, EngineSource.Simulated]
+        : [EngineSource.Hardware];
+
     /// <summary>
-    /// Hides the link-behaviour picker in builds that have no simulator, rather than offering a
-    /// control that cannot do anything.
+    /// Hides the link-behaviour picker unless a simulated run is actually selected, rather than
+    /// offering a control that cannot affect anything.
     /// </summary>
-    public static Visibility SimulationVisibility =>
-        SimulationAvailable ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility SimulationVisibility =>
+        Source == EngineSource.Simulated ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>Adapter pickers are meaningless for a simulated run.</summary>
+    public Visibility RigVisibility =>
+        Source == EngineSource.Hardware ? Visibility.Visible : Visibility.Collapsed;
 
     public LabViewModel()
+        : this(new WindowsAdapterProvider())
     {
+    }
+
+    public LabViewModel(IAdapterProvider provider)
+    {
+        _provider = provider;
         Profile = SimulationProfile.Healthy;
         LinkSpeed = LinkSpeed.Mbps1000;
+        FrameBytes = EthernetFrame.MaximumBytes;
+        Source = SimulationAvailable ? EngineSource.Simulated : EngineSource.Hardware;
     }
 
     public static IReadOnlyList<SimulationProfile> Profiles => AllProfiles;
 
     public static IReadOnlyList<LinkSpeedOption> LinkSpeedOptions => AllLinkSpeeds;
 
+    public static IReadOnlyList<int> FrameSizes => AllFrameSizes;
+
     /// <summary>
     /// Exists so the view can bind enablement directly. A property is cheaper than registering
     /// a boolean-negating value converter, and it reads better at the binding site.
     /// </summary>
     public bool IsIdle => !IsRunning;
+
+    /// <summary>
+    /// Whether the link speed is the user's to pick.
+    /// </summary>
+    /// <remarks>
+    /// It is not, on real hardware: 802.3 requires auto-negotiation at 1000BASE-T and above, so
+    /// the rate is whatever the two PHYs settled on. Offering a control that claims otherwise
+    /// would misrepresent the one thing this app is careful about - a forced setting that the
+    /// hardware silently ignored.
+    /// </remarks>
+    public bool LinkSpeedIsChosen =>
+        Source == EngineSource.Simulated || TransmitAdapter?.NegotiatedSpeed is null;
 
     // Formatting lives here rather than in XAML converters: it is one line per value, it is
     // unit-testable, and the view stays a layout concern.
@@ -141,7 +236,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     public string LatencyP99Display => LatencyP99Microseconds.ToString("n0", CultureInfo.InvariantCulture);
 
-    public string RxErrorsDisplay => RxErrors.ToString("n0", CultureInfo.InvariantCulture);
+    public string CaptureDropsDisplay => CaptureDrops.ToString("n0", CultureInfo.InvariantCulture);
+
+    public string TelemetryGapsDisplay => TelemetryGaps.ToString("n0", CultureInfo.InvariantCulture);
 
     public LinkSpeedOption SelectedLinkSpeed
     {
@@ -153,13 +250,56 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     /// True whenever the displayed numbers are synthesised. The UI must state this loudly:
     /// a plausible chart that never touched a cable is worse than no chart at all.
     /// </summary>
-    public bool IsSimulated => _engine?.IsSimulated ?? true;
+    public bool IsSimulated => _engine?.IsSimulated ?? Source == EngineSource.Simulated;
 
     /// <summary>The engine the pump should poll, or null when idle.</summary>
     public IPacketEngine? Engine => _engine;
 
     /// <summary>Raised when a run starts, so the view can reset its plots.</summary>
     public event EventHandler? RunStarted;
+
+    /// <summary>
+    /// Lists the adapters a run could use. Called on navigation rather than in the constructor so
+    /// the enumeration - which reads real hardware - is not on the UI thread's construction path.
+    /// </summary>
+    public async Task LoadAdaptersAsync()
+    {
+        if (IsRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            var found = await _provider.GetPhysicalAdaptersAsync();
+
+            Adapters.Clear();
+            foreach (var adapter in found)
+            {
+                // An adapter whose address will not parse cannot be used, and dropping it here is
+                // better than failing at Start with a message about byte counts.
+                if (PhysicalAddress.TryParse(adapter.MacAddress, out var mac))
+                {
+                    Adapters.Add(new AdapterOption(
+                        adapter.Id,
+                        $"{AdapterNickname.From(adapter.Description, adapter.Name)} — {DescribeLink(adapter)}",
+                        mac.GetAddressBytes(),
+                        adapter.NegotiatedSpeed));
+                }
+            }
+
+            // The rig is two adapters wired to each other, so the common case needs no choosing.
+            TransmitAdapter ??= Adapters.FirstOrDefault();
+            ReceiveAdapter ??= Adapters.FirstOrDefault(a => a.Id != TransmitAdapter?.Id);
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Could not list adapters: {ex.Message}";
+        }
+    }
+
+    private static string DescribeLink(NetworkAdapterInfo adapter) =>
+        adapter.NegotiatedSpeed?.ShortName() ?? (adapter.IsUp ? "linked" : "no link");
 
     /// <summary>
     /// Applies a drained batch's newest sample. The intermediate samples belong to the plots;
@@ -172,8 +312,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         RxMegabitsPerSecond = sample.RxMegabitsPerSecond;
         LatencyP50Microseconds = sample.LatencyP50Microseconds;
         LatencyP99Microseconds = sample.LatencyP99Microseconds;
-        RxErrors = sample.RxErrors;
+        CaptureDrops = sample.RxCaptureDrops;
         TxFrames = sample.TxFrames;
+        TelemetryGaps = _engine?.DroppedSamples ?? 0;
     }
 
     public void Dispose()
@@ -185,8 +326,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
         _disposed = true;
 
-        // Blocking is acceptable only because the simulated engine's teardown completes
-        // synchronously. A native engine will need a real async shutdown path.
+        // Blocking on teardown is acceptable here and nowhere else: this runs on window close,
+        // and the native engine's stop joins three threads that must not outlive the process
+        // holding the restore journal.
         _engine?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _engine = null;
     }
@@ -203,13 +345,17 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
             if (_engine is null)
             {
-                ErrorMessage = "No packet engine is available in this build. " +
-                               "The measurement engine arrives in Phase 3.";
+                ErrorMessage = "No packet engine is available in this build.";
                 return;
             }
 
-            await _engine.StartAsync(new EngineRunSettings { LinkSpeed = LinkSpeed });
+            await _engine.StartAsync(new EngineRunSettings
+            {
+                LinkSpeed = EffectiveLinkSpeed(),
+                FrameBytes = FrameBytes,
+            });
 
+            TelemetryGaps = 0;
             IsRunning = true;
             OnPropertyChanged(nameof(IsSimulated));
             RunStarted?.Invoke(this, EventArgs.Empty);
@@ -217,13 +363,22 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             // Without this the faulted task escapes AsyncRelayCommand onto the UI thread and
-            // terminates the app with no message. Phase 3 makes this routine rather than
+            // terminates the app with no message. On real hardware this is routine rather than
             // exotic: Npcap missing, adapter already in use, elevation denied.
             ErrorMessage = $"Could not start the run: {ex.Message}";
             IsRunning = false;
             await DisposeEngineAsync();
         }
     }
+
+    /// <summary>
+    /// The rate the run is measured against: what the adapters negotiated, or the user's pick when
+    /// nothing has negotiated anything.
+    /// </summary>
+    private LinkSpeed EffectiveLinkSpeed() =>
+        Source == EngineSource.Hardware
+            ? TransmitAdapter?.NegotiatedSpeed ?? LinkSpeed
+            : LinkSpeed;
 
     /// <summary>
     /// Builds the engine for a run, or null when this build has none.
@@ -236,27 +391,37 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     [SuppressMessage(
         "Performance",
         "CA1859:Use concrete types when possible for improved performance",
-        Justification = "The interface is the point. Phase 3 returns the native engine from " +
-                        "here, and narrowing the return type now would have to be undone then.")]
-    [SuppressMessage(
-        "Performance",
-        "CA1822:Mark members as static",
-        Justification = "Reads the Profile instance property in Debug builds. Only appears " +
-                        "static in Release, where the simulation branch is compiled out.")]
+        Justification = "Returns one of two implementations chosen at run time.")]
     private IPacketEngine? CreateEngine()
     {
 #if SIMULATION
-        return new SimulatedPacketEngine(Profile);
-#else
-        return null;
+        if (Source == EngineSource.Simulated)
+        {
+            return new SimulatedPacketEngine(Profile);
+        }
 #endif
+        if (TransmitAdapter is null || ReceiveAdapter is null)
+        {
+            return null;
+        }
+
+        return new NativePacketEngine(
+            NativePacketEngine.DeviceName(TransmitAdapter.Id),
+            NativePacketEngine.DeviceName(ReceiveAdapter.Id),
+            TransmitAdapter.Mac,
+            ReceiveAdapter.Mac);
     }
 
     /// <summary>Reports that the engine stopped because it faulted rather than because it finished.</summary>
     public void ReportFault()
     {
         IsRunning = false;
-        ErrorMessage = "The engine faulted and the run was stopped. The readings above are stale.";
+
+        // The engine's own account first. "Faulted" alone reads as one failure; a stopped capture
+        // and a stopped transmit mean opposite things about whether the numbers on screen are a
+        // measurement of the cable.
+        ErrorMessage = _engine?.FaultDescription
+            ?? "The engine faulted and the run was stopped. The readings above are stale.";
     }
 
     [RelayCommand(CanExecute = nameof(CanStop))]
@@ -270,7 +435,11 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         IsRunning = false;
     }
 
-    private bool CanStart() => !IsRunning;
+    private bool CanStart() =>
+        !IsRunning &&
+        (Source == EngineSource.Simulated ||
+         (TransmitAdapter is not null && ReceiveAdapter is not null &&
+          TransmitAdapter.Id != ReceiveAdapter.Id));
 
     private bool CanStop() => IsRunning;
 

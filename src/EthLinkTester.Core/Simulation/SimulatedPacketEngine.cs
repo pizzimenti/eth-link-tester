@@ -52,9 +52,6 @@ public sealed class SimulatedPacketEngine : IPacketEngine
     /// </summary>
     private const int MaxBacklogSamples = SampleRateHz * 2;
 
-    /// <summary>Bytes added per frame on the wire: 8-byte preamble plus a 12-byte interframe gap.</summary>
-    private const int WireOverheadBytes = 20;
-
     private readonly TimeProvider _timeProvider;
     private readonly Random _random;
     private readonly SimulationProfile _profile;
@@ -84,6 +81,9 @@ public sealed class SimulatedPacketEngine : IPacketEngine
     public bool IsSimulated => true;
 
     public EngineState State { get; private set; } = EngineState.Idle;
+
+    /// <summary>Always null: a simulated run has nothing to go wrong with.</summary>
+    public string? FaultDescription => null;
 
     public SimulationProfile Profile => _profile;
 
@@ -198,7 +198,7 @@ public sealed class SimulatedPacketEngine : IPacketEngine
             LatencyP99Microseconds = Jitter(shape.LatencyP99Microseconds, 0.30),
             TxFrames = _txFrames,
             RxFrames = _rxFrames,
-            RxErrors = _rxErrors,
+            RxCaptureDrops = _rxErrors,
         };
     }
 
@@ -231,9 +231,14 @@ public sealed class SimulatedPacketEngine : IPacketEngine
     }
 
     /// <summary>Frames carried at <paramref name="megabitsPerSecond"/> over a span, from the on-wire frame size.</summary>
+    /// <remarks>
+    /// The wire cost comes from <see cref="EthernetFrame"/> rather than a local constant. Both
+    /// engines used to define it for themselves and disagreed by 29% at 64-byte frames, which made
+    /// the same cable grade differently depending on which one measured it.
+    /// </remarks>
     private long FramesFor(double megabitsPerSecond, double seconds)
     {
-        var wireBits = (_settings!.FrameBytes + WireOverheadBytes) * 8.0;
+        var wireBits = EthernetFrame.WireBytes(_settings!.FrameBytes) * 8.0;
         return (long)(megabitsPerSecond * 1_000_000 / wireBits * seconds);
     }
 

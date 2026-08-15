@@ -4,6 +4,7 @@ using EthLinkTester.App.Telemetry;
 using EthLinkTester.App.ViewModels;
 using EthLinkTester.Core.Engine;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Navigation;
 
 namespace EthLinkTester.App.Views;
 
@@ -45,6 +46,17 @@ public sealed partial class LabPage : Page, IDisposable
         // but Unloaded still fires when the page leaves the visual tree - tearing down there
         // would kill the very run the caching exists to protect. The cached page lives for the
         // application's lifetime and is released with the process.
+    }
+
+    /// <summary>
+    /// Refreshes the adapter list on every visit rather than once at construction. The page is
+    /// cached for the application's lifetime, so a USB adapter plugged in after launch would
+    /// otherwise never appear.
+    /// </summary>
+    protected override async void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        await ViewModel.LoadAdaptersAsync();
     }
 
     private void OnEngineFaulted(object? sender, EventArgs e) => ViewModel.ReportFault();

@@ -37,7 +37,7 @@
                           IsClosable="False"
                           Severity="Warning"
                           Title="Simulated data"
-                          Message="No hardware is being measured. These readings are synthesised to exercise the UI; the packet engine arrives in Phase 3." />
+                          Message="No hardware is being measured. These readings are synthesised to exercise the UI. Choose Hardware as the source to run real frames across the cable." />
 
             <muxc:InfoBar Grid.Row="1"
                           IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
@@ -46,8 +46,42 @@
                           Title="Run stopped"
                           Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" />
 
+            <!--
+              Only one of the two mode-specific controls is ever visible - adapter pickers for a
+              hardware run, the behaviour profile for a simulated one - which is what keeps this
+              row inside a reasonable window width now that it carries the rig selection.
+            -->
             <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                <StackPanel Spacing="4" Visibility="{x:Bind vm:LabViewModel.SimulationVisibility}">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Source" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="110"
+                              ItemsSource="{x:Bind vm:LabViewModel.Sources}"
+                              SelectedItem="{x:Bind ViewModel.Source, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
+                    <TextBlock Text="Transmit from" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="190"
+                              DisplayMemberPath="Label"
+                              ItemsSource="{x:Bind ViewModel.Adapters}"
+                              SelectedItem="{x:Bind ViewModel.TransmitAdapter, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
+                    <TextBlock Text="Receive on" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="190"
+                              DisplayMemberPath="Label"
+                              ItemsSource="{x:Bind ViewModel.Adapters}"
+                              SelectedItem="{x:Bind ViewModel.ReceiveAdapter, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.SimulationVisibility, Mode=OneWay}">
                     <TextBlock Text="Link behaviour" Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <ComboBox MinWidth="150"
@@ -57,13 +91,27 @@
                 </StackPanel>
 
                 <StackPanel Spacing="4">
+                    <TextBlock Text="Frame bytes" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="100"
+                              ItemsSource="{x:Bind vm:LabViewModel.FrameSizes}"
+                              SelectedItem="{x:Bind ViewModel.FrameBytes, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <!--
+                  Disabled rather than hidden on real hardware. 802.3 requires auto-negotiation at
+                  1000BASE-T and above, so the rate is whatever the two PHYs settled on; a greyed
+                  control showing that value says so, where an absent one would not.
+                -->
+                <StackPanel Spacing="4">
                     <TextBlock Text="Link speed" Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <ComboBox MinWidth="130"
                               DisplayMemberPath="Label"
                               ItemsSource="{x:Bind vm:LabViewModel.LinkSpeedOptions}"
                               SelectedItem="{x:Bind ViewModel.SelectedLinkSpeed, Mode=TwoWay}"
-                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                              IsEnabled="{x:Bind ViewModel.LinkSpeedIsChosen, Mode=OneWay}" />
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
@@ -88,12 +136,20 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <c:StatTile Grid.Column="0" Label="Transmit" Unit="Mbps" Value="{x:Bind ViewModel.TxDisplay, Mode=OneWay}" />
                 <c:StatTile Grid.Column="1" Label="Receive" Unit="Mbps" Value="{x:Bind ViewModel.RxDisplay, Mode=OneWay}" />
                 <c:StatTile Grid.Column="2" Label="Latency p50" Unit="&#181;s" Value="{x:Bind ViewModel.LatencyP50Display, Mode=OneWay}" />
                 <c:StatTile Grid.Column="3" Label="Latency p99" Unit="&#181;s" Value="{x:Bind ViewModel.LatencyP99Display, Mode=OneWay}" />
-                <c:StatTile Grid.Column="4" Label="Receive errors" Unit="frames" Value="{x:Bind ViewModel.RxErrorsDisplay, Mode=OneWay}" />
+                <!--
+                  "Capture drops", not "Receive errors". The counter rises when this host cannot
+                  take frames off the capture buffer fast enough, so a fast machine with a broken
+                  cable reads zero while a busy machine with a perfect one reads thousands.
+                  Labelled as errors it invited exactly the wrong conclusion about the cable.
+                -->
+                <c:StatTile Grid.Column="4" Label="Capture drops" Unit="frames" Value="{x:Bind ViewModel.CaptureDropsDisplay, Mode=OneWay}" />
+                <c:StatTile Grid.Column="5" Label="Telemetry gaps" Unit="windows" Value="{x:Bind ViewModel.TelemetryGapsDisplay, Mode=OneWay}" />
             </Grid>
 
             <!--

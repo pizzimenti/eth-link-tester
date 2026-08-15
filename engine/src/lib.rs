@@ -8,13 +8,27 @@
 //! That is not a theory here - `bin/wirecheck.rs` proves it against the reference rig, and its
 //! result is recorded in the repository so a regression is visible rather than assumed.
 
+pub mod diag;
 pub mod engine;
 pub mod ffi;
 pub mod frame;
 pub mod histogram;
 pub mod ring;
 
-pub use engine::{Engine, RunConfig};
+pub use engine::{Engine, EngineFault, RunConfig, StartError};
+
+/// Bytes each frame occupies on the wire beyond the buffer handed to pcap.
+///
+/// Seven bytes of preamble, one start-of-frame delimiter, four of FCS the NIC appends, and the
+/// twelve-byte interframe gap the standard requires before the next frame may start. Throughput is
+/// reported against this figure, because "percentage of line rate" is only meaningful if the
+/// overhead the line rate includes is counted too - at 64-byte frames it is more than a quarter of
+/// the traffic, and omitting it understates a saturated link as 73% busy.
+///
+/// The managed simulator must use the same definition. It counts from the 1518-byte wire frame
+/// (which already contains the FCS) and so adds 20; this counts from the 1514-byte buffer and adds
+/// 24. Both arrive at 1538, and a review found them 29% apart at 64 bytes before they did.
+pub const WIRE_OVERHEAD_BYTES: usize = 24;
 
 /// Telemetry as the managed host reads it.
 ///

@@ -50,6 +50,18 @@ public interface IPacketEngine : IAsyncDisposable
 
     EngineState State { get; }
 
+    /// <summary>
+    /// Why the run stopped, or null while it is healthy. Set whenever
+    /// <see cref="State"/> becomes <see cref="EngineState.Faulted"/>.
+    /// </summary>
+    /// <remarks>
+    /// The state alone is not enough to act on. A stopped capture, a stopped transmit, and a
+    /// crashed worker all read as Faulted and mean different things to the person holding the
+    /// cable - and the first of those specifically means the receive count on screen is <b>not</b>
+    /// a measurement of loss, which is the opposite of what it looks like.
+    /// </remarks>
+    string? FaultDescription { get; }
+
     ValueTask StartAsync(EngineRunSettings settings, CancellationToken cancellationToken = default);
 
     ValueTask StopAsync(CancellationToken cancellationToken = default);

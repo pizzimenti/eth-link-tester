@@ -4,8 +4,9 @@ A Windows 11 tool that characterizes Ethernet **links** by running real traffic 
 loop between two NICs in one machine — then tells you honestly how much of the result is the cable
 and how much is everything else in the path.
 
-> **Status: pre-alpha.** Phase 0 (environment and repo foundation). Nothing runs yet.
-> See [Build phases](#build-phases).
+> **Status: pre-alpha.** Phase 3 complete — the engine puts real frames on real copper and Lab Mode
+> plots them live. Topology detection, the RFC 2544 orchestration, and grading are still ahead.
+> See [Build phases](#build-phases) and [What has actually been measured](#what-has-actually-been-measured).
 
 ## Why this exists
 
@@ -40,6 +41,25 @@ and link retrains under sustained load.
 Supported: 10BASE-T (as a reachability probe only), 100BASE-TX, 1000BASE-T, 2.5GBASE-T, 5GBASE-T,
 10GBASE-T. The test matrix is derived from probed adapter capability, so the app only offers tiers
 your hardware can actually reach.
+
+## What has actually been measured
+
+The central claim — that Npcap injection reaches copper — is not taken on trust. `engine/src/bin/`
+holds the three tools that established it, and their results on the reference rig (a Killer E2400
+and a Realtek USB GbE adapter joined by one cable) are these:
+
+| | Result |
+|---|---|
+| Frames crossing the wire | 1000 sent, 1000 received, confirmed on **both** NICs' own hardware counters, with no reverse traffic |
+| 1518-byte frames | 934 Mbps sustained (94% of line rate), p50 450 µs, p99 700 µs, 99.8% delivered |
+| 64-byte frames | 181 Mbps (271k frames/s), p50 5.0 ms, p99 6.8 ms |
+| A link dropped mid-run | Reported as a fault within half a second, naming the cause |
+
+Two of those need a caveat the app repeats wherever it shows them. The 64-byte figures describe the
+**transmitting NIC**, not the cable: the same cable measured in the other direction is four times
+faster, because the limit is the Killer's packet path. And the latency figures include the driver's
+own send buffer, so they bound cable latency rather than measuring it — closing that gap needs NIC
+hardware timestamping, which neither adapter here provides.
 
 ## What it is not
 

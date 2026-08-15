@@ -4,83 +4,86 @@ using System.Runtime.Versioning;
 namespace EthLinkTester.Platform;
 
 /// <summary>
-/// Makes Npcap's libraries findable before anything tries to load them.
+/// Loads Npcap's libraries by absolute path, so the engine can bind to them.
 /// </summary>
 /// <remarks>
 /// <para>
 /// This is not optional and it is not defensive. Npcap installs <c>wpcap.dll</c> into
 /// <c>System32\Npcap</c> rather than <c>System32</c> - precisely <em>because</em> WinPcap
 /// API-compatible mode is off, that mode's whole function being to drop the libraries system-wide.
-/// The directory is not on the default search path, so a process that does not add it fails to
-/// load the engine at all. Observed exactly once, the hard way: exit code 53, no output, no
+/// The directory is not on the default search path, so a process that does nothing about it fails
+/// to load the engine at all. Observed exactly once, the hard way: exit code 53, no output, no
 /// diagnostic.
 /// </para>
 /// <para>
-/// <see cref="SetDefaultDllDirectories"/> is used rather than editing <c>PATH</c>. Prepending to
-/// PATH would also work and would leave the process searching attacker-writable directories for
-/// every subsequent load; restricting the search to the system directories plus this one
-/// explicitly added path is both the working fix and the safe one, which is a rare combination
-/// worth taking.
+/// <b>Pre-loading rather than changing the search path.</b> The first working version called
+/// <c>SetDefaultDllDirectories</c> and <c>AddDllDirectory</c>, which fixed it by rewriting where
+/// <em>every</em> subsequent load in the process looks - a change with no owner, no scope, and no
+/// way to undo, made from a static constructor that ran whenever the type was first touched.
+/// It also broke once already in the obvious way: the flag combination that sounded safest
+/// excluded the application directory and locked the process out of loading its own engine.
+/// Loading the two libraries by full path leaves the search path alone; once a module named
+/// <c>wpcap.dll</c> is in the process, the loader satisfies the engine's import from it without
+/// searching anywhere.
 /// </para>
 /// </remarks>
 [SupportedOSPlatform("windows")]
 public static class NpcapLoader
 {
     /// <summary>
-    /// System32, the application directory, and anything added by <c>AddDllDirectory</c>.
+    /// Packet.dll first: wpcap.dll depends on it, and loading it explicitly means the dependency
+    /// is resolved from a known path rather than by whatever the search order turns up.
     /// </summary>
-    /// <remarks>
-    /// The application directory has to be in this set. Restricting the search to System32 and
-    /// user directories alone is the safer-sounding choice and it locks the process out of loading
-    /// its own libraries - including the engine sitting beside the assembly. Discovered by doing
-    /// exactly that: a DllNotFoundException for our own DLL, nothing to do with Npcap.
-    /// </remarks>
-    private const uint LoadLibrarySearchDefaultDirs = 0x00001000;
+    private static readonly string[] Libraries = ["Packet.dll", "wpcap.dll"];
 
     private static readonly Lock Gate = new();
-    private static bool _configured;
+    private static bool _loaded;
 
     /// <summary>The directory Npcap installs its libraries into.</summary>
     public static string NpcapDirectory { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.System), "Npcap");
 
     /// <summary>
-    /// Adds Npcap's directory to this process's library search path. Safe to call repeatedly.
+    /// Loads Npcap's libraries into this process. Safe to call repeatedly.
     /// </summary>
-    /// <returns>False when the directory is absent, which means Npcap is not installed.</returns>
-    public static bool EnsureSearchPath()
+    /// <returns>
+    /// False when Npcap is not installed, which is an expected state: the app still runs, and the
+    /// preflight check is what tells the user about it. A library that is present but will not
+    /// load is a broken installation and throws, because silently reporting "not installed" would
+    /// send the user to reinstall something they already have.
+    /// </returns>
+    public static bool TryLoad()
     {
         lock (Gate)
         {
-            if (_configured)
+            if (_loaded)
             {
                 return true;
             }
 
-            if (!Directory.Exists(NpcapDirectory))
+            foreach (var library in Libraries)
             {
-                return false;
+                var path = Path.Combine(NpcapDirectory, library);
+
+                if (!File.Exists(path))
+                {
+                    return false;
+                }
+
+                // The handle is deliberately not kept. Windows reference-counts loaded modules and
+                // nothing here ever wants to unload one - the engine binds to these for the life
+                // of the process.
+                if (!NativeLibrary.TryLoad(path, out _))
+                {
+                    throw new InvalidOperationException(
+                        $"'{path}' exists but could not be loaded, so the engine cannot use Npcap. " +
+                        "The usual cause is a 32-bit Npcap installation under a 64-bit process.",
+                        new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError()));
+                }
             }
 
-            SetDefaultDllDirectories(LoadLibrarySearchDefaultDirs);
-
-            if (AddDllDirectory(NpcapDirectory) == IntPtr.Zero)
-            {
-                throw new InvalidOperationException(
-                    $"Could not add '{NpcapDirectory}' to the library search path, so the engine " +
-                    "cannot load Npcap.",
-                    new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError()));
-            }
-
-            _configured = true;
+            _loaded = true;
             return true;
         }
     }
-
-    [DllImport("kernel32", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetDefaultDllDirectories(uint directoryFlags);
-
-    [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr AddDllDirectory(string newDirectory);
 }

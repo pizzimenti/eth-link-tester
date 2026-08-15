@@ -48,11 +48,21 @@ public readonly record struct TelemetrySample
     public required long RxFrames { get; init; }
 
     /// <summary>
-    /// Cumulative receive errors. Sourced from NIC hardware counters rather than userspace
-    /// capture, because at rate a capture drops frames and that is indistinguishable from
-    /// loss caused by the cable.
+    /// Cumulative frames the kernel matched but this process's capture buffer could not take.
     /// </summary>
-    public required long RxErrors { get; init; }
+    /// <remarks>
+    /// <b>Not link errors and not cable loss.</b> It was labelled "receive errors" and shown on
+    /// the Lab page under that name, which invites precisely the wrong conclusion: the number
+    /// rises when the host cannot keep up, so a fast machine with a broken cable reads zero and a
+    /// busy machine with a perfect one reads thousands. It is a caveat on the measurement's
+    /// completeness, not a measurement of the link.
+    /// <para>
+    /// Real frame loss is <c>TxFrames</c> minus <c>RxFrames</c> - two counters read from two
+    /// drivers - cross-checked against the adapters' own hardware counters. Loss caused by a cable
+    /// appears in no receive counter at all, which is why it has to be derived rather than read.
+    /// </para>
+    /// </remarks>
+    public required long RxCaptureDrops { get; init; }
 
     public DateTimeOffset Timestamp => new(TimestampTicks, TimeSpan.Zero);
 }

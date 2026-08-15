@@ -127,7 +127,7 @@ public class SimulatedPacketEngineTests
 
         var (stalled, stalledClock) = await RunningEngineAsync(SimulationProfile.Failing);
         stalledClock.Advance(TimeSpan.FromSeconds(seconds));
-        var stalledErrors = Collect(stalled)[^1].RxErrors;
+        var stalledErrors = Collect(stalled)[^1].RxCaptureDrops;
 
         // The same elapsed time, polled once a second so nothing is ever dropped.
         var (polled, polledClock) = await RunningEngineAsync(SimulationProfile.Failing);
@@ -135,7 +135,7 @@ public class SimulatedPacketEngineTests
         for (var i = 0; i < seconds; i++)
         {
             polledClock.Advance(TimeSpan.FromSeconds(1));
-            polledErrors = Collect(polled)[^1].RxErrors;
+            polledErrors = Collect(polled)[^1].RxCaptureDrops;
         }
 
         Assert.True(
@@ -153,7 +153,7 @@ public class SimulatedPacketEngineTests
         {
             Assert.True(samples[i].TxFrames >= samples[i - 1].TxFrames);
             Assert.True(samples[i].RxFrames >= samples[i - 1].RxFrames);
-            Assert.True(samples[i].RxErrors >= samples[i - 1].RxErrors);
+            Assert.True(samples[i].RxCaptureDrops >= samples[i - 1].RxCaptureDrops);
         }
     }
 
@@ -163,7 +163,7 @@ public class SimulatedPacketEngineTests
         var samples = await CollectAsync(SimulationProfile.Healthy, TimeSpan.FromSeconds(1));
 
         Assert.NotEmpty(samples);
-        Assert.Equal(0, samples[^1].RxErrors);
+        Assert.Equal(0, samples[^1].RxCaptureDrops);
     }
 
     [Fact]
@@ -171,7 +171,7 @@ public class SimulatedPacketEngineTests
     {
         var samples = await CollectAsync(SimulationProfile.Failing, TimeSpan.FromSeconds(1));
 
-        Assert.True(samples[^1].RxErrors > 0);
+        Assert.True(samples[^1].RxCaptureDrops > 0);
     }
 
     /// <summary>
