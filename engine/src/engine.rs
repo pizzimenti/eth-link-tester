@@ -81,6 +81,14 @@ const SEND_QUEUE_WIRE_TIME: Duration = Duration::from_millis(4);
 /// Assumed link rate when the caller does not know one. Gigabit is the floor this rig runs at.
 const DEFAULT_LINK_BITS_PER_SECOND: u64 = 1_000_000_000;
 
+/// 100-nanosecond ticks from 0001-01-01 to the Unix epoch.
+///
+/// `TelemetrySample.TimestampTicks` is read on the managed side as `DateTimeOffset` ticks, and the
+/// simulator writes exactly that. The engine wrote nanoseconds since its own start, so every native
+/// sample plotted at a date near year 1 with intervals ten times too long - two engines behind one
+/// interface, disagreeing about what the shared field means.
+const TICKS_TO_UNIX_EPOCH: i64 = 621_355_968_000_000_000;
+
 #[derive(Clone, Debug)]
 pub struct RunConfig {
     pub tx_device: String,
@@ -275,7 +283,6 @@ impl Engine {
             Arc::clone(&engine.counters),
             latency,
             Arc::clone(&engine.ring),
-            epoch,
             link_bits_per_second,
         ));
 
@@ -503,7 +510,6 @@ fn spawn_sampler(
     counters: Arc<Counters>,
     latency: Arc<Mutex<LatencyHistogram>>,
     ring: Arc<TelemetryRing>,
-    epoch: Instant,
     link_bits_per_second: u64,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
@@ -564,19 +570,18 @@ fn spawn_sampler(
                     counters.record_fault(EngineFault::TransmitExceedsLineRate);
                 }
 
-                // Sound: the sampler thread is the ring's only producer for the engine's lifetime.
-                unsafe {
-                    ring.push(TelemetrySample {
-                        timestamp_ticks: epoch.elapsed().as_nanos() as i64,
-                        tx_megabits_per_second: tx_megabits,
-                        rx_megabits_per_second: megabits(rx_bytes.saturating_sub(rx_then), elapsed),
-                        latency_p50_microseconds: p50,
-                        latency_p99_microseconds: p99,
-                        tx_frames: counters.tx_frames.load(Ordering::Relaxed) as i64,
-                        rx_frames: rx_frames as i64,
-                        rx_errors: counters.rx_capture_drops.load(Ordering::Relaxed) as i64,
-                    })
-                };
+                // The sampler thread is the ring's only producer for the engine's lifetime, which
+                // is what push requires.
+                ring.push(TelemetrySample {
+                    timestamp_ticks: dotnet_ticks(),
+                    tx_megabits_per_second: tx_megabits,
+                    rx_megabits_per_second: megabits(rx_bytes.saturating_sub(rx_then), elapsed),
+                    latency_p50_microseconds: p50,
+                    latency_p99_microseconds: p99,
+                    tx_frames: counters.tx_frames.load(Ordering::Relaxed) as i64,
+                    rx_frames: rx_frames as i64,
+                    rx_errors: counters.rx_capture_drops.load(Ordering::Relaxed) as i64,
+                });
             }
         })
     })
@@ -584,6 +589,20 @@ fn spawn_sampler(
 
 fn megabits(bytes: u64, seconds: f64) -> f64 {
     bytes as f64 * 8.0 / 1_000_000.0 / seconds
+}
+
+/// The current time as .NET counts it: 100-nanosecond ticks since 0001-01-01 UTC.
+///
+/// Wall clock rather than the run's monotonic epoch, because the field is read as a date. That
+/// makes the timestamp series vulnerable to an NTP correction stepping it backwards mid-run, which
+/// a chart must tolerate rather than assume away - but a monotonic value in a field the host
+/// formats as a date is wrong every time, not just occasionally.
+fn dotnet_ticks() -> i64 {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+
+    TICKS_TO_UNIX_EPOCH + (since_epoch.as_nanos() / 100) as i64
 }
 
 /// Whether a reported rate is above what the link could carry.
@@ -701,5 +720,31 @@ mod tests {
     #[test]
     fn an_unknown_link_rate_disables_the_check() {
         assert!(!exceeds_line_rate(11_336.0, 0.0));
+    }
+
+    /// The timestamp is read on the managed side as a `DateTimeOffset`. A wrong epoch does not
+    /// fail anything - it plots a chart dated year 1, or year 4000, with intervals off by a factor
+    /// of ten, and every value on it is otherwise correct.
+    #[test]
+    fn the_timestamp_lands_in_this_century() {
+        // 2020-01-01 and 2100-01-01 as .NET ticks.
+        let ticks = dotnet_ticks();
+
+        assert!(ticks > 637_134_336_000_000_000, "before 2020: {ticks}");
+        assert!(ticks < 662_378_112_000_000_000, "after 2100: {ticks}");
+    }
+
+    /// One second of wall clock must be ten million ticks, or the chart's time axis is scaled.
+    #[test]
+    fn ticks_advance_ten_million_per_second() {
+        let before = dotnet_ticks();
+        std::thread::sleep(Duration::from_millis(50));
+        let after = dotnet_ticks();
+
+        let elapsed_seconds = (after - before) as f64 / 10_000_000.0;
+        assert!(
+            (0.04..0.30).contains(&elapsed_seconds),
+            "a 50 ms sleep measured {elapsed_seconds}s"
+        );
     }
 }

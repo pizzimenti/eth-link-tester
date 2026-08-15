@@ -141,38 +141,41 @@ pub unsafe extern "C" fn elt_engine_drain(
         return ELT_ERR_NULL_ARGUMENT;
     }
 
+    let engine_handle = unsafe { &*handle };
+
+    // Claimed outside the catch, and released outside it, so a panic in between cannot strand the
+    // handle in Busy. It could: `catch_unwind` skips the rest of the closure, so the store back to
+    // Running never ran, every later call was refused as not running - including the host's
+    // cleanup `elt_engine_stop` - and the host then dropped the pointer, leaving three threads and
+    // two open capture devices running for the life of the process, still transmitting.
+    if engine_handle
+        .state
+        .compare_exchange(
+            STATE_RUNNING,
+            STATE_BUSY,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        )
+        .is_err()
+    {
+        return ELT_ERR_NOT_RUNNING;
+    }
+
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let engine_handle = unsafe { &*handle };
-
-        // Claims the handle for the duration. A concurrent stop cannot free it underneath us, and
-        // a concurrent drain cannot advance the read cursor in parallel - the ring is
-        // single-consumer, and two drains would deliver overlapping samples to both callers.
-        if engine_handle
-            .state
-            .compare_exchange(
-                STATE_RUNNING,
-                STATE_BUSY,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            return ELT_ERR_NOT_RUNNING;
-        }
-
         let out = unsafe { std::slice::from_raw_parts_mut(samples, capacity as usize) };
-        // Sound because the state word above guarantees this is the only drain in flight.
-        let drained = unsafe { engine_handle.engine.ring().drain(out) };
+        // The state word above guarantees this is the only drain in flight, which is the ring's
+        // single-consumer requirement.
+        let drained = engine_handle.engine.ring().drain(out);
 
         if !out_dropped.is_null() {
             unsafe { *out_dropped = drained.dropped };
         }
 
-        engine_handle.state.store(STATE_RUNNING, Ordering::Release);
-
         // Non-negative is a count; negative is a code. The host checks the sign.
         i32::try_from(drained.count).unwrap_or(i32::MAX)
     }));
+
+    engine_handle.state.store(STATE_RUNNING, Ordering::Release);
 
     result.unwrap_or(ELT_ERR_PANIC)
 }
@@ -230,28 +233,26 @@ pub unsafe extern "C" fn elt_engine_fault(handle: *mut EngineHandle) -> i32 {
         return ELT_ERR_NULL_ARGUMENT;
     }
 
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let engine_handle = unsafe { &*handle };
+    let engine_handle = unsafe { &*handle };
 
-        // Same claim the drain takes, for the same reason: a concurrent stop must not free the
-        // engine out from under this read.
-        if engine_handle
-            .state
-            .compare_exchange(
-                STATE_RUNNING,
-                STATE_BUSY,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            return ELT_ERR_NOT_RUNNING;
-        }
+    // Same claim the drain takes, released the same way: outside the catch, so a panic cannot
+    // leave the handle stranded in Busy and unstoppable.
+    if engine_handle
+        .state
+        .compare_exchange(
+            STATE_RUNNING,
+            STATE_BUSY,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        )
+        .is_err()
+    {
+        return ELT_ERR_NOT_RUNNING;
+    }
 
-        let fault = engine_handle.engine.fault() as i32;
-        engine_handle.state.store(STATE_RUNNING, Ordering::Release);
-        fault
-    }));
+    let result = catch_unwind(AssertUnwindSafe(|| engine_handle.engine.fault() as i32));
+
+    engine_handle.state.store(STATE_RUNNING, Ordering::Release);
 
     result.unwrap_or(ELT_ERR_PANIC)
 }

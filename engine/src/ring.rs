@@ -18,8 +18,20 @@
 //! Each slot therefore carries a stamp that the consumer checks before and after copying. A slot
 //! whose stamp changed underneath the copy is discarded rather than delivered, and the drain
 //! recomputes what it missed from the index as it stands when the copying is finished.
+//!
+//! # Why the payload is eight atomics rather than one struct
+//!
+//! The stamp detects a torn read; it does not make the read *legal*. Copying the payload with
+//! `ptr::read` while the producer writes it with `ptr::write` is a data race, and a data race is
+//! undefined behaviour in Rust whether or not the reader throws the result away - the compiler is
+//! entitled to assume it never happens and to miscompile around it. Storing the sample as eight
+//! 64-bit atomics makes each word access defined; the stamp still does the job it always did,
+//! which is catching a copy that spans two different writes.
+//!
+//! Relaxed ordering is enough for those words because the stamp's Release/Acquire pair supplies
+//! the ordering. The payoff is that this module now contains no `unsafe` at all: no `UnsafeCell`,
+//! no hand-written `Sync`, and no unsafe fn whose contract a caller could quietly break.
 
-use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::TelemetrySample;
@@ -29,11 +41,28 @@ use crate::TelemetrySample;
 const CAPACITY: usize = 1024;
 const MASK: u64 = (CAPACITY as u64) - 1;
 
+/// 64-bit words per sample.
+const WORDS: usize = 8;
+
+const _: () = assert!(
+    core::mem::size_of::<TelemetrySample>() == WORDS * 8,
+    "TelemetrySample must be exactly WORDS 64-bit fields for the word-wise transfer below"
+);
+
 /// A slot and the position it currently holds, or 0 while it is being written.
 struct Slot {
     /// `position + 1` once written, so 0 is unambiguously "never written or being written".
     stamp: AtomicU64,
-    value: UnsafeCell<TelemetrySample>,
+    value: [AtomicU64; WORDS],
+}
+
+impl Slot {
+    fn new() -> Self {
+        Self {
+            stamp: AtomicU64::new(0),
+            value: [const { AtomicU64::new(0) }; WORDS],
+        }
+    }
 }
 
 pub struct TelemetryRing {
@@ -43,11 +72,6 @@ pub struct TelemetryRing {
     /// Total the consumer has accounted for, delivered or skipped.
     read: AtomicU64,
 }
-
-/// Sharing is sound because the access rules are enforced by the `unsafe` contracts on
-/// [`TelemetryRing::push`] and [`TelemetryRing::drain`]: one producer, one consumer.
-unsafe impl Sync for TelemetryRing {}
-unsafe impl Send for TelemetryRing {}
 
 /// What a drain produced.
 pub struct Drained {
@@ -65,14 +89,39 @@ impl Default for TelemetryRing {
     }
 }
 
+/// Reinterprets a sample as words. Sound for any bit pattern: every field is 64 bits wide and
+/// `f64`/`i64` have no invalid representations.
+fn to_words(sample: &TelemetrySample) -> [u64; WORDS] {
+    [
+        sample.timestamp_ticks as u64,
+        sample.tx_megabits_per_second.to_bits(),
+        sample.rx_megabits_per_second.to_bits(),
+        sample.latency_p50_microseconds.to_bits(),
+        sample.latency_p99_microseconds.to_bits(),
+        sample.tx_frames as u64,
+        sample.rx_frames as u64,
+        sample.rx_errors as u64,
+    ]
+}
+
+fn from_words(words: [u64; WORDS]) -> TelemetrySample {
+    TelemetrySample {
+        timestamp_ticks: words[0] as i64,
+        tx_megabits_per_second: f64::from_bits(words[1]),
+        rx_megabits_per_second: f64::from_bits(words[2]),
+        latency_p50_microseconds: f64::from_bits(words[3]),
+        latency_p99_microseconds: f64::from_bits(words[4]),
+        tx_frames: words[5] as i64,
+        rx_frames: words[6] as i64,
+        rx_errors: words[7] as i64,
+    }
+}
+
 impl TelemetryRing {
     pub fn new() -> Self {
         Self {
             slots: (0..CAPACITY)
-                .map(|_| Slot {
-                    stamp: AtomicU64::new(0),
-                    value: UnsafeCell::new(TelemetrySample::default()),
-                })
+                .map(|_| Slot::new())
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
             written: AtomicU64::new(0),
@@ -82,13 +131,12 @@ impl TelemetryRing {
 
     /// Publishes a sample. Never blocks and never fails; the oldest unread sample is overwritten.
     ///
-    /// # Safety
-    /// Exactly one thread may call this for the lifetime of the ring. Two concurrent calls are a
-    /// data race on the slot contents. This is `unsafe` rather than merely documented because the
-    /// previous safe signature made that race reachable without a single `unsafe` block at the
-    /// call site - 24 million torn samples in a two-producer test that the compiler accepted
-    /// without complaint.
-    pub unsafe fn push(&self, sample: TelemetrySample) {
+    /// # Correctness
+    /// Exactly one thread may call this. A second producer cannot cause undefined behaviour - the
+    /// payload words are atomic - but both would claim the same position, so one sample would
+    /// silently replace the other and the write index would lose count of both. The FFI layer's
+    /// state word enforces the equivalent rule on the consumer side.
+    pub fn push(&self, sample: TelemetrySample) {
         let position = self.written.load(Ordering::Relaxed);
         let slot = &self.slots[(position & MASK) as usize];
 
@@ -96,7 +144,9 @@ impl TelemetryRing {
         // read, rather than assembling a sample from the old value and the new one.
         slot.stamp.store(0, Ordering::Release);
 
-        unsafe { std::ptr::write(slot.value.get(), sample) };
+        for (cell, word) in slot.value.iter().zip(to_words(&sample)) {
+            cell.store(word, Ordering::Relaxed);
+        }
 
         slot.stamp.store(position + 1, Ordering::Release);
         self.written.store(position + 1, Ordering::Release);
@@ -107,11 +157,11 @@ impl TelemetryRing {
     /// Copying rather than lending a view into the ring: at 60 Hz and 64 bytes a sample this is
     /// four kilobytes a second, which is not worth one lifetime hazard across an FFI boundary.
     ///
-    /// # Safety
+    /// # Correctness
     /// Exactly one thread may call this at a time. Two concurrent drains would each advance the
     /// read cursor and deliver overlapping samples - 191 million duplicates in a two-consumer
     /// test. The FFI layer enforces this with a state word rather than trusting the caller.
-    pub unsafe fn drain(&self, out: &mut [TelemetrySample]) -> Drained {
+    pub fn drain(&self, out: &mut [TelemetrySample]) -> Drained {
         let mut read = self.read.load(Ordering::Relaxed);
         let written = self.written.load(Ordering::Acquire);
 
@@ -124,11 +174,14 @@ impl TelemetryRing {
             let slot = &self.slots[(read & MASK) as usize];
 
             let before = slot.stamp.load(Ordering::Acquire);
-            let value = unsafe { std::ptr::read(slot.value.get()) };
+            let mut words = [0u64; WORDS];
+            for (word, cell) in words.iter_mut().zip(slot.value.iter()) {
+                *word = cell.load(Ordering::Relaxed);
+            }
             let after = slot.stamp.load(Ordering::Acquire);
 
             if before == read + 1 && after == before {
-                out[count] = value;
+                out[count] = from_words(words);
                 count += 1;
             } else {
                 // The producer moved this slot on while it was being copied, so the sample is
@@ -156,24 +209,31 @@ mod tests {
         }
     }
 
-    fn push(ring: &TelemetryRing, n: i64) {
-        // Single-threaded in tests, so the contract holds.
-        unsafe { ring.push(sample(n)) };
-    }
+    #[test]
+    fn every_field_survives_the_round_trip() {
+        let original = TelemetrySample {
+            timestamp_ticks: -42,
+            tx_megabits_per_second: 941.5,
+            rx_megabits_per_second: 0.0,
+            latency_p50_microseconds: f64::MIN_POSITIVE,
+            latency_p99_microseconds: 1e300,
+            tx_frames: i64::MAX,
+            rx_frames: i64::MIN,
+            rx_errors: 7,
+        };
 
-    fn drain(ring: &TelemetryRing, out: &mut [TelemetrySample]) -> Drained {
-        unsafe { ring.drain(out) }
+        assert_eq!(from_words(to_words(&original)), original);
     }
 
     #[test]
     fn drains_in_order() {
         let ring = TelemetryRing::new();
         for n in 0..5 {
-            push(&ring, n);
+            ring.push(sample(n));
         }
 
         let mut out = [TelemetrySample::default(); 8];
-        let drained = drain(&ring, &mut out);
+        let drained = ring.drain(&mut out);
 
         assert_eq!(drained.count, 5);
         assert_eq!(drained.dropped, 0);
@@ -186,12 +246,12 @@ mod tests {
         let ring = TelemetryRing::new();
         let mut out = [TelemetrySample::default(); 8];
 
-        push(&ring, 1);
-        assert_eq!(drain(&ring, &mut out).count, 1);
-        assert_eq!(drain(&ring, &mut out).count, 0);
+        ring.push(sample(1));
+        assert_eq!(ring.drain(&mut out).count, 1);
+        assert_eq!(ring.drain(&mut out).count, 0);
 
-        push(&ring, 2);
-        let drained = drain(&ring, &mut out);
+        ring.push(sample(2));
+        let drained = ring.drain(&mut out);
         assert_eq!(drained.count, 1);
         assert_eq!(out[0].timestamp_ticks, 2);
     }
@@ -202,11 +262,11 @@ mod tests {
     fn overwritten_samples_are_reported_as_dropped() {
         let ring = TelemetryRing::new();
         for n in 0..(CAPACITY as i64 + 100) {
-            push(&ring, n);
+            ring.push(sample(n));
         }
 
         let mut out = [TelemetrySample::default(); CAPACITY];
-        let drained = drain(&ring, &mut out);
+        let drained = ring.drain(&mut out);
 
         assert_eq!(drained.dropped, 100, "100 samples were overwritten unread");
         assert_eq!(drained.count, CAPACITY);
@@ -217,14 +277,14 @@ mod tests {
     fn a_partial_drain_leaves_the_rest() {
         let ring = TelemetryRing::new();
         for n in 0..10 {
-            push(&ring, n);
+            ring.push(sample(n));
         }
 
         let mut small = [TelemetrySample::default(); 4];
-        assert_eq!(drain(&ring, &mut small).count, 4);
+        assert_eq!(ring.drain(&mut small).count, 4);
         assert_eq!(small[0].timestamp_ticks, 0);
 
-        assert_eq!(drain(&ring, &mut small).count, 4);
+        assert_eq!(ring.drain(&mut small).count, 4);
         assert_eq!(small[0].timestamp_ticks, 4);
     }
 
@@ -243,14 +303,14 @@ mod tests {
         let mut delivered = 0u64;
         let mut lost = 0u64;
         let mut take = |ring: &TelemetryRing, out: &mut [TelemetrySample]| {
-            let d = drain(ring, out);
+            let d = ring.drain(out);
             delivered += d.count as u64;
             lost += d.dropped;
             d.count
         };
 
         for n in 0..5_000i64 {
-            push(&ring, n);
+            ring.push(sample(n));
             if n % 100 == 0 {
                 take(&ring, &mut out);
             }
@@ -286,18 +346,16 @@ mod tests {
                 let mut n = 0i64;
                 while !stop.load(Ordering::Relaxed) {
                     // Every field carries the same value, so any mixture of two writes is visible.
-                    unsafe {
-                        ring.push(TelemetrySample {
-                            timestamp_ticks: n,
-                            tx_megabits_per_second: n as f64,
-                            rx_megabits_per_second: n as f64,
-                            latency_p50_microseconds: n as f64,
-                            latency_p99_microseconds: n as f64,
-                            tx_frames: n,
-                            rx_frames: n,
-                            rx_errors: n,
-                        })
-                    };
+                    ring.push(TelemetrySample {
+                        timestamp_ticks: n,
+                        tx_megabits_per_second: n as f64,
+                        rx_megabits_per_second: n as f64,
+                        latency_p50_microseconds: n as f64,
+                        latency_p99_microseconds: n as f64,
+                        tx_frames: n,
+                        rx_frames: n,
+                        rx_errors: n,
+                    });
                     n += 1;
                 }
                 n
@@ -309,7 +367,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
 
         while std::time::Instant::now() < deadline {
-            let drained = unsafe { ring.drain(&mut out) };
+            let drained = ring.drain(&mut out);
             for sample in out.iter().take(drained.count) {
                 let n = sample.timestamp_ticks;
                 assert_eq!(sample.tx_frames, n, "torn sample: fields disagree");

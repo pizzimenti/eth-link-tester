@@ -45,20 +45,26 @@ fn main() {
         "t(s)", "tx Mbps", "rx Mbps", "p50 us", "p99 us", "tx frames", "rx frames", "capdrop"
     );
 
+    // The sample's timestamp is .NET ticks - 100 ns since year 1 - because the managed host reads
+    // that field as a date. Elapsed time here is the difference from the first sample seen.
+    const TICKS_PER_SECOND: f64 = 10_000_000.0;
+    let mut first_ticks: Option<i64> = None;
+
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(seconds) {
         std::thread::sleep(Duration::from_millis(500));
 
-        // Sound: this loop is the ring's only consumer.
-        let drained = unsafe { engine.ring().drain(&mut buffer) };
+        // This loop is the ring's only consumer, which is what drain requires.
+        let drained = engine.ring().drain(&mut buffer);
         total_dropped += drained.dropped;
         samples_seen += drained.count;
 
         if drained.count > 0 {
             last = buffer[drained.count - 1];
+            let origin = *first_ticks.get_or_insert(last.timestamp_ticks);
             println!(
                 "{:>6.1} {:>10.1} {:>10.1} {:>9.1} {:>9.1} {:>12} {:>12} {:>9}",
-                last.timestamp_ticks as f64 / 1e9,
+                (last.timestamp_ticks - origin) as f64 / TICKS_PER_SECOND,
                 last.tx_megabits_per_second,
                 last.rx_megabits_per_second,
                 last.latency_p50_microseconds,
