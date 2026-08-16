@@ -39,6 +39,31 @@ public enum TopologySignal
     /// something in between is holding the far side up. Disruptive, so opt-in.
     /// </summary>
     LinkStateCoupling,
+
+    /// <summary>
+    /// One port forced to 100 Mbps, then both speeds re-read. A deliberate asymmetry, which turns
+    /// the free <see cref="LinkSpeedMismatch"/> signal from a passive hope into a test.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The idea is deterministic where the others are statistical: one cable carries one link, so
+    /// forcing one end down to 100 drags the other end with it. A switch terminates each segment
+    /// separately, so its far port stays where it was and the two ends now disagree - which
+    /// <see cref="LinkSpeedMismatch"/> already treats as conclusive.
+    /// </para>
+    /// <para>
+    /// Only one end is forced, and only to 100. IEEE 802.3 requires auto-negotiation at 1000BASE-T
+    /// and above so the two PHYs can resolve master/slave clock roles, so 1000 cannot be pinned at
+    /// all - and a driver that appears to offer it as a fixed value is not telling the truth, which
+    /// this project has already caught one adapter doing. Forcing one side is enough anyway: the
+    /// asymmetry is the whole mechanism.
+    /// </para>
+    /// <para>
+    /// Disruptive - it bounces the link and needs the restore journal to put the setting back, so
+    /// it is opt-in like <see cref="LinkStateCoupling"/>.
+    /// </para>
+    /// </remarks>
+    ForcedSpeedAsymmetry,
 }
 
 /// <summary>What a single signal concluded.</summary>
