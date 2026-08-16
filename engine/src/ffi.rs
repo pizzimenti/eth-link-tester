@@ -255,7 +255,14 @@ pub unsafe extern "C" fn elt_engine_stop(handle: *mut EngineHandle) -> i32 {
     result.unwrap_or(ELT_ERR_PANIC)
 }
 
-/// Why the run stopped producing: 0 none, 1 receive, 2 transmit, 3 a worker panicked.
+/// Why the run stopped producing: 0 none, 1 receive, 2 transmit, 3 a worker panicked,
+/// 4 transmit exceeded line rate.
+///
+/// Code 4 is the one a host is most likely to mishandle, because it is not a stopped worker: the
+/// run is still producing, and producing figures that are impossible. A driver whose link has gone
+/// accepts frames at memory speed and discards them, which read as 11,336 Mbps on a gigabit cable
+/// beside a receive count that looked like 92% loss. It is reported rather than clamped, so the
+/// host must treat it as a fault and not as a measurement.
 ///
 /// The host has to be able to ask. A dead worker leaves transmit running and the receive count
 /// frozen, which renders as 100% packet loss on a healthy cable - the most alarming thing this app

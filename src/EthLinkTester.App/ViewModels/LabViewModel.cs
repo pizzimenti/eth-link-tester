@@ -99,6 +99,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
     [NotifyPropertyChangedFor(nameof(IsIdle))]
+    // LinkSpeedIsChosen is now gated on IsIdle, and a computed property built on another computed
+    // property gets no notification of its own.
+    [NotifyPropertyChangedFor(nameof(LinkSpeedIsChosen))]
     public partial bool IsRunning { get; set; }
 
     [ObservableProperty]
@@ -234,8 +237,16 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     /// would misrepresent the one thing this app is careful about - a forced setting that the
     /// hardware silently ignored.
     /// </remarks>
+    /// <remarks>
+    /// Also false while a run is going. The engine captured its link speed at Start and sizes and
+    /// validates the whole run against that, so a picker still live mid-run lets the number on
+    /// screen drift away from the number being measured against - the same disagreement between
+    /// the displayed rate and the used rate that <see cref="AdoptNegotiatedLinkSpeed"/> exists to
+    /// prevent, arriving through the other door. Hardware with a negotiated speed was already
+    /// locked; this covers simulated runs and hardware that reports no rate.
+    /// </remarks>
     public bool LinkSpeedIsChosen =>
-        Source == EngineSource.Simulated || TransmitAdapter?.NegotiatedSpeed is null;
+        IsIdle && (Source == EngineSource.Simulated || TransmitAdapter?.NegotiatedSpeed is null);
 
     // Formatting lives here rather than in XAML converters: it is one line per value, it is
     // unit-testable, and the view stays a layout concern.

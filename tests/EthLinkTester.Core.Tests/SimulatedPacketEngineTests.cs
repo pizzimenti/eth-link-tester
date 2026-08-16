@@ -125,22 +125,27 @@ public class SimulatedPacketEngineTests
     {
         const int seconds = 11;
 
+        // Measured on RxFrames rather than RxCaptureDrops. This test used the capture-drop field
+        // back when the simulation published its cable-error model through it; that field is now
+        // what it says it is - frames the host's capture buffer lost - and the simulated host
+        // never falls behind, so it is always zero and the comparison would have been 0 >= 0.
+        // A vacuous assertion is worse than none, because it still reads as coverage.
         var (stalled, stalledClock) = await RunningEngineAsync(SimulationProfile.Failing);
         stalledClock.Advance(TimeSpan.FromSeconds(seconds));
-        var stalledErrors = Collect(stalled)[^1].RxCaptureDrops;
+        var stalledFrames = Collect(stalled)[^1].RxFrames;
 
         // The same elapsed time, polled once a second so nothing is ever dropped.
         var (polled, polledClock) = await RunningEngineAsync(SimulationProfile.Failing);
-        var polledErrors = 0L;
+        var polledFrames = 0L;
         for (var i = 0; i < seconds; i++)
         {
             polledClock.Advance(TimeSpan.FromSeconds(1));
-            polledErrors = Collect(polled)[^1].RxCaptureDrops;
+            polledFrames = Collect(polled)[^1].RxFrames;
         }
 
         Assert.True(
-            stalledErrors >= polledErrors * 0.9,
-            $"stalled run reported {stalledErrors} errors vs {polledErrors} when polled continuously");
+            stalledFrames >= polledFrames * 0.9,
+            $"stalled run reported {stalledFrames} frames vs {polledFrames} when polled continuously");
     }
 
     [Fact]
@@ -157,21 +162,45 @@ public class SimulatedPacketEngineTests
         }
     }
 
+    /// <summary>
+    /// A healthy cable loses nothing, and the host keeps up.
+    /// </summary>
+    /// <remarks>
+    /// Both halves matter and they are different measurements. These tests used to assert the
+    /// profile's error model through <c>RxCaptureDrops</c>, which is host capture-buffer loss -
+    /// a property of how busy this machine is, not of the cable. Cable loss has no counter of its
+    /// own anywhere in the system; it exists only as sent minus received.
+    /// </remarks>
     [Fact]
-    public async Task HealthyProfileProducesNoErrors()
+    public async Task HealthyProfileLosesNoFrames()
     {
         var samples = await CollectAsync(SimulationProfile.Healthy, TimeSpan.FromSeconds(1));
 
         Assert.NotEmpty(samples);
+
+        // Close to transmit rather than equal to it. Receive is jittered independently of
+        // transmit, so the two differ by a percent or so in either direction on a perfect link -
+        // which is true of the real rig as well, where a window boundary falls between the two
+        // counters. What a healthy profile must not show is a systematic deficit.
+        Assert.InRange(
+            samples[^1].RxFrames,
+            (long)(samples[^1].TxFrames * 0.9),
+            long.MaxValue);
         Assert.Equal(0, samples[^1].RxCaptureDrops);
     }
 
     [Fact]
-    public async Task FailingProfileAccumulatesErrors()
+    public async Task FailingProfileLosesFrames()
     {
         var samples = await CollectAsync(SimulationProfile.Failing, TimeSpan.FromSeconds(1));
 
-        Assert.True(samples[^1].RxCaptureDrops > 0);
+        Assert.True(
+            samples[^1].TxFrames > samples[^1].RxFrames,
+            $"sent {samples[^1].TxFrames} and received {samples[^1].RxFrames}; a failing cable "
+            + "must lose frames");
+
+        // The host is not the problem here, and the UI must not be taught that it is.
+        Assert.Equal(0, samples[^1].RxCaptureDrops);
     }
 
     /// <summary>

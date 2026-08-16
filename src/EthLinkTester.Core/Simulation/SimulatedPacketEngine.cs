@@ -98,6 +98,9 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         _rxFrames = 0;
         _rxErrors = 0;
         _errorRemainder = 0;
+        // Reset with the rest. DroppedSamples is per-run, so carrying it over made a fresh
+        // experiment open by reporting telemetry gaps that belonged to the previous one.
+        _droppedSamples = 0;
         State = EngineState.Running;
 
         return ValueTask.CompletedTask;
@@ -200,8 +203,26 @@ public sealed class SimulatedPacketEngine : IPacketEngine
             LatencyP50Microseconds = Jitter(shape.LatencyP50Microseconds, 0.15),
             LatencyP99Microseconds = Jitter(shape.LatencyP99Microseconds, 0.30),
             TxFrames = _txFrames,
-            RxFrames = _rxFrames,
-            RxCaptureDrops = _rxErrors,
+            // Net of the profile's cable errors, because that is the only way a cable's losses can
+            // appear at all. Loss caused by a cable shows up in no receive counter - the frame
+            // never arrives to be counted - so it exists solely as the gap between what was sent
+            // and what was received, which is precisely how the real engine surfaces it and what
+            // Phase 6's grading will read.
+            RxFrames = Math.Max(0, _rxFrames - _rxErrors),
+            // Zero, not `_rxErrors`. That field is the profile's *cable* error model, and
+            // RxCaptureDrops means frames the host's own capture buffer lost - a property of how
+            // busy this machine is, which is why it rises on a fast link with a perfect cable and
+            // stays at zero on a broken one. Publishing cable errors through it taught the UI the
+            // wrong fault signature: a Marginal profile rendered as host-side capture overload,
+            // and the tile that exists to say "this measurement may be incomplete" said "this
+            // cable is bad".
+            //
+            // The simulated host keeps up, so this is genuinely zero. The cable errors have
+            // nowhere to go: TelemetrySample is pinned at 64 bytes and carries no field for them,
+            // because the engine cannot see them either - loss caused by a cable appears in no
+            // receive counter and has to be derived from TxFrames minus RxFrames. Grading in
+            // Phase 6 is what needs them, and it will need somewhere to put them.
+            RxCaptureDrops = 0,
         };
     }
 

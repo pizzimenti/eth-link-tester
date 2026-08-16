@@ -59,6 +59,14 @@ public sealed class NativePacketEngine : IPacketEngine
                 // loader would otherwise fail at. Done here rather than in a static constructor so
                 // the work happens when the engine is actually needed, and so merely referencing
                 // this type from a test host does not touch the filesystem.
+                //
+                // The result is deliberately not fatal here. wpcap is delay-loaded, so the engine
+                // resolves and answers elt_sample_size perfectly well without Npcap present, and
+                // refusing the whole library would turn a missing prerequisite into an unloadable
+                // assembly. What must not happen is a *pcap* call reaching Rust with no Npcap
+                // behind it - the MSVC delay-load failure path raises a loader exception from
+                // inside the engine, outside catch_unwind's contract, which can take the process
+                // rather than returning ELT_ERR_OPEN_FAILED. StartAsync gates that directly.
                 NpcapLoader.TryLoad();
 
                 var beside = Path.Combine(
@@ -145,10 +153,25 @@ public sealed class NativePacketEngine : IPacketEngine
         // devices with nothing left holding their handle, unreachable by StopAsync and by the
         // finalizer alike. The adapters stay open for the life of the process, and the next start
         // fails with "the adapter is in use by another application" naming no application.
-        if (_handle != IntPtr.Zero)
+        var stale = Interlocked.Exchange(ref _handle, IntPtr.Zero);
+        if (stale != IntPtr.Zero)
         {
-            _ = elt_engine_stop(_handle);
-            _handle = IntPtr.Zero;
+            _ = elt_engine_stop(stale);
+        }
+
+        // The first pcap call must not be the thing that discovers Npcap is missing. wpcap is
+        // delay-loaded, so a missing DLL surfaces as an MSVC loader exception raised from inside
+        // the engine on first use - a foreign exception outside `catch_unwind`'s contract, which
+        // can terminate the process instead of producing the ELT_ERR_OPEN_FAILED the ABI promises.
+        // The Rig page's preflight checks this, but Lab Mode's hardware start does not go through
+        // it, so the check belongs here where every hardware run passes.
+        if (!NpcapLoader.TryLoad())
+        {
+            State = EngineState.Idle;
+            throw new InvalidOperationException(
+                "Npcap is not installed, or is not where this expects it "
+                + $"({NpcapLoader.NpcapDirectory}). Install it from https://npcap.com with "
+                + "WinPcap-compatible mode turned off.");
         }
 
         // Checked on the way in to the first run rather than at application startup. Doing it at
@@ -188,13 +211,21 @@ public sealed class NativePacketEngine : IPacketEngine
 
     public ValueTask StopAsync(CancellationToken cancellationToken = default)
     {
-        if (_handle != IntPtr.Zero)
+        // Claimed atomically, because the finalizer can run on another thread while this method is
+        // in flight - the object becomes unreachable the moment nothing holds it, which is before
+        // DisposeAsync gets to SuppressFinalize. A plain read-then-clear lets both threads see the
+        // same non-zero handle and call elt_engine_stop on it twice. That happens to be survivable
+        // today only because the native side keeps a tombstone and answers the second call with
+        // ELT_ERR_NOT_RUNNING; this side should not be relying on a property of the other side of
+        // the ABI to avoid a double free.
+        var claimed = Interlocked.Exchange(ref _handle, IntPtr.Zero);
+
+        if (claimed != IntPtr.Zero)
         {
             // A non-zero code here means the engine could not shut down cleanly. The run is over
             // either way, but reporting Faulted rather than Idle keeps the host from presenting a
             // half-stopped engine as ready for another run.
-            var code = elt_engine_stop(_handle);
-            _handle = IntPtr.Zero;
+            var code = elt_engine_stop(claimed);
 
             if (code != 0)
             {
@@ -256,8 +287,12 @@ public sealed class NativePacketEngine : IPacketEngine
         }
 
         _disposed = true;
-        await StopAsync().ConfigureAwait(false);
+
+        // Before the stop, not after. Between the two there is a window in which this object is
+        // unreachable and still holds a live handle, and the finalizer running in that window
+        // would race StopAsync for it.
         GC.SuppressFinalize(this);
+        await StopAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -272,13 +307,15 @@ public sealed class NativePacketEngine : IPacketEngine
     /// </remarks>
     ~NativePacketEngine()
     {
-        if (_handle != IntPtr.Zero)
+        // Same atomic claim as StopAsync, so whichever of the two arrives second finds nothing.
+        var claimed = Interlocked.Exchange(ref _handle, IntPtr.Zero);
+
+        if (claimed != IntPtr.Zero)
         {
             // The code is discarded deliberately. There is nobody left to tell: the object is
             // being collected, so no property survives to hold the message and no consumer
             // remains to read one. Freeing the threads and the adapters is the whole point.
-            _ = elt_engine_stop(_handle);
-            _handle = IntPtr.Zero;
+            _ = elt_engine_stop(claimed);
         }
     }
 
@@ -341,10 +378,14 @@ public sealed class NativePacketEngine : IPacketEngine
         _ => $"The engine reported an unrecognised fault ({fault}).",
     };
 
-    [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    // LPUTF8Str, not the ANSI default. The engine reads these with `CStr::to_str`, which is UTF-8
+    // and answers ELT_ERR_BAD_UTF8 for anything else, while ANSI marshalling encodes in the
+    // system's active code page. The two agree for the ASCII of `\Device\NPF_{GUID}` and diverge
+    // the moment a byte above 0x7F appears - a failure that would depend on the machine's locale.
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int elt_engine_start(
-        string txDevice,
-        string rxDevice,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string txDevice,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string rxDevice,
         byte[] txMac,
         byte[] rxMac,
         uint frameLen,
