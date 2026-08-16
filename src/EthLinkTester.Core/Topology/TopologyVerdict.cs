@@ -60,6 +60,32 @@ public sealed record TopologyVerdict(
     IReadOnlyList<TopologyObservation> Observations)
 {
     /// <summary>
+    /// Which pair of adapters this describes, and when it was taken.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A verdict with no identity cannot be joined to anything, and one with no timestamp cannot be
+    /// re-checked. Both become primary-key material the moment Phase 6 persists these, which is why
+    /// they are here before that happens rather than as a schema migration afterwards.
+    /// </para>
+    /// <para>
+    /// The timestamp is load-bearing for a reason that is easy to miss: a verdict taken before a
+    /// suite is not evidence about the path during it. An RFC 2544 latency run alone is 120 seconds
+    /// per frame size repeated twenty times, and over hours a link can flap, a driver can reload -
+    /// this rig's USB adapter already does under small-frame load - or a switch can be inserted
+    /// between phases. Re-running the free signals at each phase boundary and comparing against the
+    /// opening verdict needs the opening verdict to know when it was.
+    /// </para>
+    /// </remarks>
+    public string? TransmitAdapterId { get; init; }
+
+    /// <inheritdoc cref="TransmitAdapterId"/>
+    public string? ReceiveAdapterId { get; init; }
+
+    /// <inheritdoc cref="TransmitAdapterId"/>
+    public DateTimeOffset? MeasuredAt { get; init; }
+
+    /// <summary>
     /// Whether a cable grade derived from this run can honestly be attributed to the cable.
     /// </summary>
     /// <remarks>
@@ -124,7 +150,7 @@ public sealed record TopologyVerdict(
         // the probe that must not cross a bridge and the link-state coupling test, and both are
         // Strong or better when they succeed.
         var direct = all
-            .Where(o => o.Finding == TopologyFinding.Direct && o.Strength <= SignalStrength.Strong)
+            .Where(o => o.Finding == TopologyFinding.Direct && o.Strength >= SignalStrength.Strong)
             .ToList();
 
         if (direct.Count > 0)
@@ -149,7 +175,7 @@ public sealed record TopologyVerdict(
     /// </remarks>
     private static TopologyConfidence ConfidenceFrom(List<TopologyObservation> agreeing)
     {
-        var strongest = agreeing.Min(o => o.Strength);
+        var strongest = agreeing.Max(o => o.Strength);
 
         return strongest switch
         {

@@ -118,23 +118,34 @@ public enum TopologyFinding
 /// How much weight a finding can carry.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Deliberately coarse. A finer scale would invite arithmetic that reads as precision the physics
 /// does not support - these are qualitative statements about how a standard behaves, not
 /// measurements.
+/// </para>
+/// <para>
+/// <b>Ascending, so that stronger really is greater.</b> This enum used to descend, with
+/// <c>Conclusive = 0</c>, while <see cref="TopologyConfidence"/> twenty lines away ascended from
+/// <c>None = 0</c>. Both were internally consistent and the comparisons against them were correct,
+/// which is what made it dangerous: the next person to write the obvious
+/// <c>strength &gt;= SignalStrength.Strong</c> would have inverted a verdict silently, in the one
+/// direction this whole model is shaped to prevent. Two opposite conventions in one file is a trap
+/// whoever set it will not be the one to spring.
+/// </para>
 /// </remarks>
 public enum SignalStrength
 {
+    /// <summary>Points one way. Meaningful only alongside others.</summary>
+    Suggestive,
+
+    /// <summary>Would be surprising to be wrong about, but is not impossible.</summary>
+    Strong,
+
     /// <summary>
     /// Settles it on its own. Reserved for signals where the alternative is physically impossible
     /// rather than merely unlikely.
     /// </summary>
     Conclusive,
-
-    /// <summary>Would be surprising to be wrong about, but is not impossible.</summary>
-    Strong,
-
-    /// <summary>Points one way. Meaningful only alongside others.</summary>
-    Suggestive,
 }
 
 /// <summary>
@@ -153,9 +164,32 @@ public sealed record TopologyObservation(
     SignalStrength Strength,
     string Detail)
 {
+    /// <summary>False when the signal was never attempted. See <see cref="NotRun"/>.</summary>
+    public bool Ran { get; init; } = true;
+
     /// <summary>
     /// A signal that ran and settled nothing, which is the common case and must stay cheap to say.
     /// </summary>
+    /// <remarks>
+    /// The strength is <see cref="SignalStrength.Suggestive"/> because an inconclusive finding has
+    /// no strength at all and something must be written there. Nothing reads it - the combiner
+    /// filters inconclusive observations out before it looks at strength - but it is the weakest
+    /// value on purpose, so that if that filtering is ever removed this cannot lift a verdict.
+    /// </remarks>
     public static TopologyObservation Nothing(TopologySignal signal, string detail) =>
         new(signal, TopologyFinding.Inconclusive, SignalStrength.Suggestive, detail);
+
+    /// <summary>
+    /// A signal that was not run at all - declined, unavailable, or not applicable to this rig.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Nothing"/>, and the distinction is a reporting requirement rather
+    /// than a nicety. Two of these signals are opt-in because they disrupt the link, so "the user
+    /// declined the link-state test" and "the link-state test ran and proved nothing" are different
+    /// facts about a run - and a report that cannot tell them apart is claiming coverage it does
+    /// not have. RFC 2544 section 7 requires the exact configuration used, including what was
+    /// disabled, to be part of the reported result.
+    /// </remarks>
+    public static TopologyObservation NotRun(TopologySignal signal, string why) =>
+        new(signal, TopologyFinding.Inconclusive, SignalStrength.Suggestive, why) { Ran = false };
 }

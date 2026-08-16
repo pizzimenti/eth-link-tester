@@ -41,10 +41,41 @@ public static class ForcedSpeedAsymmetrySignal
     /// </summary>
     /// <param name="forced">The adapter that was forced, re-read after the link settled.</param>
     /// <param name="free">The adapter left on auto-negotiation, re-read after the link settled.</param>
-    public static TopologyObservation Observe(NetworkAdapterInfo forced, NetworkAdapterInfo free)
+    /// <param name="forceWasApplied">
+    /// True only when this probe actually changed the adapter's speed, and false when it found the
+    /// setting already at the target and wrote nothing.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b><paramref name="forceWasApplied"/> is not a convenience.</b> The configurator skips both
+    /// the journal entry and the write when a property already holds the value being asked for,
+    /// which is right for it and lethal here. A probe that died mid-cycle leaves the adapter pinned
+    /// at 100; the next probe then forces nothing, journals nothing, restores nothing - and the two
+    /// ends read 100 and 100, which this method would otherwise report as
+    /// <see cref="TopologyFinding.Direct"/> at <see cref="SignalStrength.Strong"/>. That is a
+    /// confident wrong verdict assembled from a state the probe did not create, and it is exactly
+    /// what the asymmetry in <see cref="TopologyVerdict"/> exists to make unreachable.
+    /// </para>
+    /// <para>
+    /// The caller cannot be trusted to remember, so the parameter is required rather than
+    /// defaulted. A probe that cannot say whether it changed anything has not run a test.
+    /// </para>
+    /// </remarks>
+    public static TopologyObservation Observe(
+        NetworkAdapterInfo forced, NetworkAdapterInfo free, bool forceWasApplied)
     {
         ArgumentNullException.ThrowIfNull(forced);
         ArgumentNullException.ThrowIfNull(free);
+
+        if (!forceWasApplied)
+        {
+            return TopologyObservation.Nothing(
+                TopologySignal.ForcedSpeedAsymmetry,
+                $"{forced.Name} was already fixed at a forced speed before the test began, so "
+                + "nothing was changed and the speeds now showing were not produced by this probe. "
+                + "A previous run most likely ended without restoring it. Put the adapter back on "
+                + "auto-negotiation and try again.");
+        }
 
         // No link at all after forcing is a real outcome and not a bridge. A direct pair whose far
         // end cannot do 100, or whose autonegotiation will not fall back cleanly against a forced
