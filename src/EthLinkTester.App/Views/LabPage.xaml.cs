@@ -61,9 +61,16 @@ public sealed partial class LabPage : Page, IDisposable
 
     /// <summary>
     /// <c>async void</c> because it is an event handler, which is the one place the pattern is
-    /// correct. <see cref="LabViewModel.ReportFaultAsync"/> handles its own failures, so nothing
-    /// can escape to terminate the process.
+    /// correct.
     /// </summary>
+    /// <remarks>
+    /// <see cref="LabViewModel.ReportFaultAsync"/> guards the engine teardown that can realistically
+    /// throw. It is not a blanket guarantee: the property reads, assignments and change
+    /// notifications around that guard sit outside it, and an exception from any of them would
+    /// escape an <c>async void</c> handler onto the dispatcher and terminate the process. The claim
+    /// here used to be that nothing could escape at all, which was a stronger promise than the code
+    /// keeps.
+    /// </remarks>
     private async void OnEngineFaulted(object? sender, EventArgs e) =>
         await ViewModel.ReportFaultAsync();
 

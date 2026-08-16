@@ -236,7 +236,19 @@ pub unsafe extern "C" fn elt_engine_stop(handle: *mut EngineHandle) -> i32 {
                 drop(guard.take());
                 ELT_OK
             }
-            Err(_) => ELT_ERR_PANIC,
+            // Poison is a previous panic inside a locked section, which is remote. What it must not
+            // do is leave the engine running: the CAS above already moved this handle to
+            // STATE_STOPPED, so every later call answers ELT_ERR_NOT_RUNNING and no caller can ever
+            // reach the engine again - three worker threads would go on saturating a physical
+            // adapter until the process exits, with nothing left able to stop them.
+            //
+            // The data behind a poisoned mutex is still there and this is the last caller that will
+            // ever see it, so take the engine out and drop it. The code still reports the panic;
+            // the difference is that the NIC goes quiet.
+            Err(poisoned) => {
+                drop(poisoned.into_inner().take());
+                ELT_ERR_PANIC
+            }
         }
     }));
 

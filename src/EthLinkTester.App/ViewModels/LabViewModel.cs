@@ -92,6 +92,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     private bool _disposed;
 
+    /// <summary>Guards <see cref="SwapIfBothEndsAreTheSame"/> against triggering itself.</summary>
+    private bool _swapping;
+
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
@@ -276,11 +279,19 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     /// Lists the adapters a run could use. Called on navigation rather than in the constructor so
     /// the enumeration - which reads real hardware - is not on the UI thread's construction path.
     /// </summary>
-    public async Task LoadAdaptersAsync()
+    /// <summary>
+    /// Refreshes the adapter list, keeping the current selections where they still exist.
+    /// </summary>
+    /// <returns>
+    /// False when enumeration failed, so a caller that is about to act on the result can stop.
+    /// Browsing the page can shrug this off and show the message; starting a run cannot, because
+    /// the run would be measured against whatever stale link speed the old objects carried.
+    /// </returns>
+    public async Task<bool> LoadAdaptersAsync()
     {
         if (IsRunning)
         {
-            return;
+            return true;
         }
 
         try
@@ -311,16 +322,28 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             // wrote null back into both selections. Without this the `??=` fallback re-picked the
             // first two adapters on every visit to the page, so a deliberate choice was silently
             // replaced and the next run transmitted on a different NIC.
-            TransmitAdapter = Adapters.FirstOrDefault(a => a.Id == previousTransmit)
-                ?? Adapters.FirstOrDefault();
-            ReceiveAdapter = Adapters.FirstOrDefault(a => a.Id == previousReceive)
-                // The rig is two adapters wired to each other, so the first run needs no choosing.
-                ?? Adapters.FirstOrDefault(a => a.Id != TransmitAdapter?.Id);
+            // Both resolved before either is assigned. Assigning transmit first let its fallback
+            // land on the adapter receive was about to restore; the receive assignment then fired
+            // SwapIfBothEndsAreTheSame with nothing to displace, which cleared transmit again. The
+            // pair has to be worked out as a pair.
+            var transmit = Adapters.FirstOrDefault(a => a.Id == previousTransmit);
+            var receive = Adapters.FirstOrDefault(a => a.Id == previousReceive);
+
+            // The rig is two adapters wired to each other, so the first run needs no choosing.
+            // A surviving selection is never displaced to make room for a fallback.
+            transmit ??= Adapters.FirstOrDefault(a => a.Id != receive?.Id);
+            receive ??= Adapters.FirstOrDefault(a => a.Id != transmit?.Id);
+
+            TransmitAdapter = transmit;
+            ReceiveAdapter = receive;
         }
         catch (Exception ex)
         {
             ErrorMessage = $"Could not list adapters: {ex.Message}";
+            return false;
         }
+
+        return true;
     }
 
     private static string DescribeLink(NetworkAdapterInfo adapter) =>
@@ -365,15 +388,10 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
         try
         {
-            // Re-read the rig before measuring against it. An AdapterOption carries the speed the
-            // link had negotiated when the page last loaded, and on a bench the cable is plugged
-            // and unplugged between visits: load the page unplugged and the negotiated speed is
-            // null, so LinkSpeed keeps its 1 Gbps default; plug into a 2.5 G partner and press
-            // Start, and healthy traffic is measured against a threshold two and a half times too
-            // low. It reads as TransmitExceedsLineRate - a fault that tears down a good run and
-            // reports frames being discarded, which is the opposite of what is happening.
-            await LoadAdaptersAsync();
-            AdoptNegotiatedLinkSpeed();
+            if (!await ConfirmRigUnchangedAsync())
+            {
+                return;
+            }
 
             await DisposeEngineAsync();
             _engine = CreateEngine();
@@ -407,6 +425,62 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// Re-reads the rig immediately before a run and confirms it is still the one that was chosen.
+    /// </summary>
+    /// <returns>False when the run must not proceed; <see cref="ErrorMessage"/> says why.</returns>
+    /// <remarks>
+    /// <para>
+    /// An <c>AdapterOption</c> carries the speed the link had negotiated when the page last
+    /// loaded, and on a bench the cable is plugged and unplugged between visits. Load the page
+    /// unplugged and the negotiated speed is null, so <see cref="LinkSpeed"/> keeps its 1 Gbps
+    /// default; plug into a 2.5 G partner and press Start, and healthy traffic gets measured
+    /// against a threshold two and a half times too low. That reads as
+    /// <c>TransmitExceedsLineRate</c> - a fault that tears down a good run reporting discarded
+    /// frames, which is the opposite of what is happening.
+    /// </para>
+    /// <para>
+    /// The refresh restores selections by id and falls back to whatever is present when an id has
+    /// gone. That fallback is right for someone browsing the page and wrong here: it would begin
+    /// line-rate raw transmission on an adapter nobody chose, and on a machine whose other NIC
+    /// carries the default route that is a network outage arriving without a prompt. Vanishing
+    /// between page load and Start is exactly what a USB adapter on a bench does.
+    /// </para>
+    /// <para>
+    /// Hardware only. A simulated run touches no adapter, so enumerating them would be a WMI round
+    /// trip spent on nothing - and would fail the comparison the moment the refresh filled in a
+    /// selection that was legitimately empty.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> ConfirmRigUnchangedAsync()
+    {
+        if (Source != EngineSource.Hardware)
+        {
+            return true;
+        }
+
+        var intendedTransmit = TransmitAdapter?.Id;
+        var intendedReceive = ReceiveAdapter?.Id;
+
+        if (!await LoadAdaptersAsync())
+        {
+            // ErrorMessage already says why. Continuing would measure against the stale objects,
+            // and against whatever link speed they were still carrying.
+            return false;
+        }
+
+        if (TransmitAdapter?.Id != intendedTransmit || ReceiveAdapter?.Id != intendedReceive)
+        {
+            ErrorMessage =
+                "The selected adapters changed while the page was open. Check the selection and "
+                + "start again.";
+            return false;
+        }
+
+        AdoptNegotiatedLinkSpeed();
+        return true;
+    }
+
+    /// <summary>
     /// Adopts the negotiated rate as the run's link speed whenever the rig can supply one.
     /// </summary>
     /// <remarks>
@@ -424,9 +498,6 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     }
 
     partial void OnSourceChanged(EngineSource value) => AdoptNegotiatedLinkSpeed();
-
-    /// <summary>Guards the swap below against triggering itself.</summary>
-    private bool _swapping;
 
     partial void OnTransmitAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
     {

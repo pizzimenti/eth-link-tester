@@ -42,7 +42,11 @@
 param(
     [string] $TransmitAdapter = 'Ethernet',
     [string] $ReceiveAdapter  = 'Ethernet 2',
+    # At least one frame. A zero-frame run satisfies every assertion below without sending
+    # anything, so the tool that exists to prove the premise would report the premise proven.
+    [ValidateRange(1, [int]::MaxValue)]
     [int]    $Count           = 1000,
+    [ValidateRange(0, [int]::MaxValue)]
     [int]    $NoiseAllowance  = 20
 )
 

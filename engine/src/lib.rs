@@ -5,8 +5,22 @@
 //! the frames never reach a PHY. Npcap installs as an NDIS lightweight filter *below* the stack,
 //! where there is no routing decision left to short-circuit.
 //!
-//! That is not a theory here - `bin/wirecheck.rs` proves it against the reference rig, and its
-//! result is recorded in the repository so a regression is visible rather than assumed.
+//! That is not a theory here - `tools/Verify-Wire.ps1` establishes it against the reference rig by
+//! bracketing a `bin/wirecheck.rs` run with both NICs' own hardware counters, and its result is
+//! recorded in the repository so a regression is visible rather than assumed. The counters are
+//! what carry the claim: `wirecheck` counts frames in userspace, and userspace cannot tell a frame
+//! that crossed a cable from one a bridge handed back.
+
+// Windows by construction, not by omission. Npcap's NDIS filter, the adapter counters and the
+// managed host are all Windows-only, and `diag` is `#[cfg(windows)]` throughout - so a build
+// elsewhere used to fail with "cannot find function `require_npcap`", which reads like a missing
+// import rather than a missing platform. A stub would be worse than this message: it would compile
+// and then not put frames on any wire.
+#[cfg(not(windows))]
+compile_error!(
+    "ethlink-engine targets Windows - it injects frames through Npcap's NDIS lightweight filter, \
+     which has no counterpart on this platform."
+);
 
 pub mod diag;
 pub mod engine;
@@ -74,32 +88,18 @@ mod tests {
     /// plausible.
     #[test]
     fn telemetry_sample_matches_the_managed_layout() {
+        use core::mem::offset_of;
+
         assert_eq!(core::mem::size_of::<TelemetrySample>(), 64);
         assert_eq!(core::mem::align_of::<TelemetrySample>(), 8);
 
-        let sample = TelemetrySample::default();
-        let base = &sample as *const _ as usize;
-        let offset = |field: *const _| field as usize - base;
-
-        assert_eq!(offset(&sample.timestamp_ticks as *const _ as *const u8), 0);
-        assert_eq!(
-            offset(&sample.tx_megabits_per_second as *const _ as *const u8),
-            8
-        );
-        assert_eq!(
-            offset(&sample.rx_megabits_per_second as *const _ as *const u8),
-            16
-        );
-        assert_eq!(
-            offset(&sample.latency_p50_microseconds as *const _ as *const u8),
-            24
-        );
-        assert_eq!(
-            offset(&sample.latency_p99_microseconds as *const _ as *const u8),
-            32
-        );
-        assert_eq!(offset(&sample.tx_frames as *const _ as *const u8), 40);
-        assert_eq!(offset(&sample.rx_frames as *const _ as *const u8), 48);
-        assert_eq!(offset(&sample.rx_errors as *const _ as *const u8), 56);
+        assert_eq!(offset_of!(TelemetrySample, timestamp_ticks), 0);
+        assert_eq!(offset_of!(TelemetrySample, tx_megabits_per_second), 8);
+        assert_eq!(offset_of!(TelemetrySample, rx_megabits_per_second), 16);
+        assert_eq!(offset_of!(TelemetrySample, latency_p50_microseconds), 24);
+        assert_eq!(offset_of!(TelemetrySample, latency_p99_microseconds), 32);
+        assert_eq!(offset_of!(TelemetrySample, tx_frames), 40);
+        assert_eq!(offset_of!(TelemetrySample, rx_frames), 48);
+        assert_eq!(offset_of!(TelemetrySample, rx_errors), 56);
     }
 }

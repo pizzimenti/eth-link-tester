@@ -540,6 +540,16 @@ fn spawn_tx(
                 // the queue would report the time it spent waiting for the frames ahead of it,
                 // which measures this queue rather than the link - at 64 bytes that pushed both
                 // percentiles past the histogram's 10 ms ceiling with a healthy cable.
+                //
+                // This stamps once and the refill loop below queues the same bytes repeatedly, so
+                // **every bulk frame in a batch carries this one sequence number** while `seq`
+                // still advances per frame. Nothing reads the sequence field today - spawn_rx
+                // discards it - so it costs nothing now. It is recorded because the obvious next
+                // use is reorder or loss detection keyed on that field, which would see thousands
+                // of duplicates per batch and conclude the link was broken. Re-stamping per frame
+                // is the wrong fix: paying that CPU cost inside the refill loop is exactly what
+                // this design exists to avoid. A per-batch id plus a queue index is the shape that
+                // works.
                 frame::stamp(&mut buffer, seq, frame::UNTIMED);
 
                 let mut queued = 0u64;

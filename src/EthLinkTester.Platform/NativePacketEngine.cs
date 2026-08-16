@@ -138,6 +138,19 @@ public sealed class NativePacketEngine : IPacketEngine
             return ValueTask.CompletedTask;
         }
 
+        // A faulted run is retryable - deliberately, because the faults worth retrying are the
+        // ones a user can fix - but the fault left the native engine alive. Only `Running` is
+        // rejected above, so without this the assignment at the end of this method would overwrite
+        // a still-valid handle and orphan the run behind it: three OS threads and two capture
+        // devices with nothing left holding their handle, unreachable by StopAsync and by the
+        // finalizer alike. The adapters stay open for the life of the process, and the next start
+        // fails with "the adapter is in use by another application" naming no application.
+        if (_handle != IntPtr.Zero)
+        {
+            _ = elt_engine_stop(_handle);
+            _handle = IntPtr.Zero;
+        }
+
         // Checked on the way in to the first run rather than at application startup. Doing it at
         // startup would load Npcap on a machine that has none and turn a missing prerequisite -
         // which the preflight check handles gracefully - into a launch failure.

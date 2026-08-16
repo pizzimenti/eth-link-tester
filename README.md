@@ -59,12 +59,18 @@ and a Realtek USB GbE adapter joined by one cable:
 
 | | Result |
 |---|---|
-| Frames crossing the wire | 1000 sent, 1000 received, **0** back on the sender, **0** errors — all four asserted by `Verify-Wire.ps1` against both NICs' hardware counters |
+| Frames crossing the wire | 1000 sent, 1000 received, **0** back on the sender, **0** errors — measured by `Verify-Wire.ps1` from both NICs' hardware counters¹ |
 | 1518-byte frames | 667,080 frames: driver-accepted, hardware-sent, hardware-received and engine-received **all identical**. 100.00% delivered, 0 discards, 0 errors |
 | 1518-byte throughput / latency | ~820 Mbps sustained, p50 ~550 µs, p99 1.6–5.3 ms |
 | 64-byte frames, Realtek → Killer | 2,105,280 frames, again identical four ways. 100.00% delivered, 210k frames/s |
 | 64-byte frames, Killer → Realtek | **Not reproducible** — see below |
 | A link dropped mid-run | Reported as a fault within half a second, naming the cause, and the run torn down |
+
+¹ Those are the values the reference rig produced. The tool's thresholds are deliberately looser
+than them: it requires *at least* `Count` frames sent and received, and tolerates up to
+`-NoiseAllowance` (default 20) frames in the reverse direction, because Windows emits ARP, LLMNR
+and mDNS on any adapter it considers up and a hard zero would fail on a healthy rig for reasons
+that have nothing to do with the cable. Receive errors must be exactly zero.
 
 The agreement in rows 2 and 4 is the strongest result here. The engine counts its own frames in
 software and the NICs count theirs in hardware, and at 1518 bytes the two agree *exactly* — which

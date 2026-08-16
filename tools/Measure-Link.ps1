@@ -79,8 +79,20 @@ $beforeRx = Get-AdapterSnapshot $rx.Name
 $output = & $enginerun `
     $tx.InterfaceGuid $rx.InterfaceGuid $tx.MacAddress $rx.MacAddress `
     $bufferBytes $Seconds $LinkMegabits 2>&1
+$engineExit = $LASTEXITCODE
 
 Wait-CounterSettle
+
+# A run that died part-way still moves the counters, so the deltas below would describe a partial
+# run while reading exactly like a complete one - the failure mode this whole script exists to
+# prevent, reproduced by the script itself.
+if ($engineExit -ne 0) {
+    $output | ForEach-Object { Write-Host $_ }
+    Write-Host ''
+    Write-Host "enginerun exited $engineExit. No measurement is reported, because a partial run's"
+    Write-Host 'counter deltas are indistinguishable from a complete one.'
+    exit $engineExit
+}
 
 $deltaTx = Get-AdapterDelta -Before $beforeTx -After (Get-AdapterSnapshot $tx.Name)
 $deltaRx = Get-AdapterDelta -Before $beforeRx -After (Get-AdapterSnapshot $rx.Name)

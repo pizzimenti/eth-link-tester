@@ -223,9 +223,7 @@ public class SimulatedPacketEngineTests
     [Fact]
     public async Task ReceiveThroughputTracksTransmit()
     {
-        var clock = new TestClock();
-        var engine = new SimulatedPacketEngine(SimulationProfile.Healthy, clock);
-        await engine.StartAsync(new EngineRunSettings { LinkSpeed = LinkSpeed.Mbps1000 });
+        var (engine, clock) = await RunningEngineAsync();
         clock.Advance(TimeSpan.FromSeconds(1));
 
         var buffer = new TelemetrySample[SampleRateHz * 4];
