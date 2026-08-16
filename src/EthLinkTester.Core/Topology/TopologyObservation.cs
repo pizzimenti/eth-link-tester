@@ -32,6 +32,33 @@ public enum TopologySignal
     /// Latency regressed against frame size. A store-and-forward bridge clocks the whole frame in
     /// before sending it on, so it adds a second serialization delay proportional to size.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not viable at 1 Gbps on this rig, and the reason is bias rather than noise.</b> The
+    /// discrimination gap is 8 ns/byte - 11.6 µs across a 64-to-1518 sweep. A regression is immune
+    /// to the ~490 µs software offset by construction, and jitter only costs samples. What it
+    /// cannot survive is error that <i>covaries with frame size</i>, and the NPF path copies each
+    /// frame four or five times plus DMA in both directions: roughly 1-4 ns/byte, which is 12-50%
+    /// of the gap and biases toward a false "switch". No number of samples fixes a bias.
+    /// </para>
+    /// <para>
+    /// Two research passes disagreed here, and the disagreement is instructive. One compared the
+    /// signal against the p50 latency and its jitter, concluded it was large enough, and called
+    /// this the strongest fallback. The other compared it against the per-byte software cost and
+    /// concluded the opposite. The second is right, because a regression's whole virtue is
+    /// discarding constant offsets - so the magnitude of the offset was never the question.
+    /// </para>
+    /// <para>
+    /// It becomes viable at 100 Mbps, where the gap is 116 µs and the software cost is unchanged,
+    /// dropping the bias to 1-5%. It also needs a probe-only mode: the current send path measures a
+    /// slope of about -2,200 ns/byte, 275 times the signal and the wrong sign, because the send
+    /// queue is sized in bytes and holds roughly 5,000 minimum frames against 325 full ones.
+    /// </para>
+    /// <para>
+    /// And it is positive-only in a way the others are not: a cut-through switch adds no second
+    /// serialization delay at all, so a single-hop slope is not evidence of a direct cable.
+    /// </para>
+    /// </remarks>
     LatencySlope,
 
     /// <summary>

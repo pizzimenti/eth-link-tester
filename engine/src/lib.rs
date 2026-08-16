@@ -27,6 +27,7 @@ pub mod engine;
 pub mod ffi;
 pub mod frame;
 pub mod histogram;
+pub mod passive;
 pub mod ring;
 pub mod topology;
 
