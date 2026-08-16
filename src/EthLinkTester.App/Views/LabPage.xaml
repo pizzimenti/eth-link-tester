@@ -37,17 +37,101 @@
                           IsClosable="False"
                           Severity="Warning"
                           Title="Simulated data"
-                          Message="No hardware is being measured. These readings are synthesised to exercise the UI; the packet engine arrives in Phase 3." />
+                          Message="No hardware is being measured. These readings are synthesised to exercise the UI. Choose Hardware as the source to run real frames across the cable." />
 
-            <muxc:InfoBar Grid.Row="1"
-                          IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+            <StackPanel Grid.Row="1" Spacing="8">
+            <muxc:InfoBar IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
                           IsClosable="False"
                           Severity="Error"
                           Title="Run stopped"
                           Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" />
 
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                <StackPanel Spacing="4" Visibility="{x:Bind vm:LabViewModel.SimulationVisibility}">
+            <!--
+              The default-route hazard. The disruption policy allows testing the adapter carrying
+              this machine's network - that is deliberate, because it is often the one worth
+              testing - on condition the warning is loud and the confirmation explicit. Lab Mode
+              had neither, and its first visit auto-selects the first two adapters, so raw traffic
+              could start on the NIC holding the user's remote session with nothing said.
+
+              Not closable, and Start stays disabled until the checkbox is ticked. The
+              acknowledgement clears whenever either selection changes, so it never carries over to
+              an adapter it was not given for.
+            -->
+            <muxc:InfoBar IsOpen="{x:Bind ViewModel.TargetsDefaultRoute, Mode=OneWay}"
+                          IsClosable="False"
+                          Severity="Warning"
+                          Title="This will interrupt your network"
+                          Message="{x:Bind ViewModel.DefaultRouteWarning, Mode=OneWay}">
+                <muxc:InfoBar.ActionButton>
+                    <CheckBox Content="I understand - allow the run"
+                              IsChecked="{x:Bind ViewModel.DefaultRouteAcknowledged, Mode=TwoWay}" />
+                </muxc:InfoBar.ActionButton>
+            </muxc:InfoBar>
+            </StackPanel>
+
+            <!--
+              Only one of the two mode-specific controls is ever visible - adapter pickers for a
+              hardware run, the behaviour profile for a simulated one - which keeps this row
+              narrower than it looks now that it carries the rig selection.
+
+              It still does not always fit. On a 1366-pixel display the initial window leaves about
+              1092 pixels, and the navigation pane and margins take enough of that for the hardware
+              row - source, two adapter pickers, frame size, link speed, Start and Stop - to run
+              past the edge. The outer ScrollViewer scrolls only vertically, so the overflow was
+              not merely ugly: Start and Stop were unreachable until the window was resized, and
+              the developer machine is wide enough never to show it.
+
+              This row gets its own horizontal scroll rather than a wrapping panel. Wrapping would
+              want a WrapPanel, which is a new package for one layout, and reflowing an instrument
+              row moves the controls around as the mode changes. Scrolling keeps the order fixed
+              and keeps everything reachable.
+            -->
+            <ScrollViewer Grid.Row="2"
+                          HorizontalScrollMode="Auto"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollMode="Disabled"
+                          VerticalScrollBarVisibility="Disabled">
+            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Source" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="110"
+                              ItemsSource="{x:Bind vm:LabViewModel.Sources}"
+                              SelectedItem="{x:Bind ViewModel.Source, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <!--
+                  LabeledBy on both pickers. They are identical to a screen reader otherwise - it
+                  announces the ComboBox content, not the caption above it - and the two are not
+                  interchangeable: choosing the wrong one runs the test in the opposite direction,
+                  which on this rig gives a four-times-different result at small frame sizes.
+                -->
+                <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
+                    <TextBlock x:Name="TransmitCaption" Text="Transmit from"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="190"
+                              DisplayMemberPath="Label"
+                              AutomationProperties.LabeledBy="{x:Bind TransmitCaption}"
+                              ItemsSource="{x:Bind ViewModel.Adapters}"
+                              SelectedItem="{x:Bind ViewModel.TransmitAdapter, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.RigVisibility, Mode=OneWay}">
+                    <TextBlock x:Name="ReceiveCaption" Text="Receive on"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="190"
+                              DisplayMemberPath="Label"
+                              AutomationProperties.LabeledBy="{x:Bind ReceiveCaption}"
+                              ItemsSource="{x:Bind ViewModel.Adapters}"
+                              SelectedItem="{x:Bind ViewModel.ReceiveAdapter, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.SimulationVisibility, Mode=OneWay}">
                     <TextBlock Text="Link behaviour" Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <ComboBox MinWidth="150"
@@ -57,13 +141,27 @@
                 </StackPanel>
 
                 <StackPanel Spacing="4">
+                    <TextBlock Text="Frame bytes" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ComboBox MinWidth="100"
+                              ItemsSource="{x:Bind vm:LabViewModel.FrameSizes}"
+                              SelectedItem="{x:Bind ViewModel.FrameBytes, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                </StackPanel>
+
+                <!--
+                  Disabled rather than hidden on real hardware. 802.3 requires auto-negotiation at
+                  1000BASE-T and above, so the rate is whatever the two PHYs settled on; a greyed
+                  control showing that value says so, where an absent one would not.
+                -->
+                <StackPanel Spacing="4">
                     <TextBlock Text="Link speed" Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <ComboBox MinWidth="130"
                               DisplayMemberPath="Label"
                               ItemsSource="{x:Bind vm:LabViewModel.LinkSpeedOptions}"
                               SelectedItem="{x:Bind ViewModel.SelectedLinkSpeed, Mode=TwoWay}"
-                              IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}" />
+                              IsEnabled="{x:Bind ViewModel.LinkSpeedIsChosen, Mode=OneWay}" />
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
@@ -72,6 +170,7 @@
                     <Button Content="Stop" Command="{x:Bind ViewModel.StopCommand}" />
                 </StackPanel>
             </StackPanel>
+            </ScrollViewer>
 
             <!--
               Current-value readouts. These answer "what is it right now", which a line chart
@@ -88,12 +187,20 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <c:StatTile Grid.Column="0" Label="Transmit" Unit="Mbps" Value="{x:Bind ViewModel.TxDisplay, Mode=OneWay}" />
                 <c:StatTile Grid.Column="1" Label="Receive" Unit="Mbps" Value="{x:Bind ViewModel.RxDisplay, Mode=OneWay}" />
                 <c:StatTile Grid.Column="2" Label="Latency p50" Unit="&#181;s" Value="{x:Bind ViewModel.LatencyP50Display, Mode=OneWay}" />
                 <c:StatTile Grid.Column="3" Label="Latency p99" Unit="&#181;s" Value="{x:Bind ViewModel.LatencyP99Display, Mode=OneWay}" />
-                <c:StatTile Grid.Column="4" Label="Receive errors" Unit="frames" Value="{x:Bind ViewModel.RxErrorsDisplay, Mode=OneWay}" />
+                <!--
+                  "Capture drops", not "Receive errors". The counter rises when this host cannot
+                  take frames off the capture buffer fast enough, so a fast machine with a broken
+                  cable reads zero while a busy machine with a perfect one reads thousands.
+                  Labelled as errors it invited exactly the wrong conclusion about the cable.
+                -->
+                <c:StatTile Grid.Column="4" Label="Capture drops" Unit="frames" Value="{x:Bind ViewModel.CaptureDropsDisplay, Mode=OneWay}" />
+                <c:StatTile Grid.Column="5" Label="Telemetry gaps" Unit="windows" Value="{x:Bind ViewModel.TelemetryGapsDisplay, Mode=OneWay}" />
             </Grid>
 
             <!--

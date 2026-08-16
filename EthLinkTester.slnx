@@ -6,5 +6,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EthLinkTester.Core.Tests/EthLinkTester.Core.Tests.csproj" />
+    <Project Path="tests/EthLinkTester.Platform.Tests/EthLinkTester.Platform.Tests.csproj" />
   </Folder>
 </Solution>

@@ -19,7 +19,12 @@ public sealed record EngineRunSettings
     /// </summary>
     public int FrameBytes { get; init; } = 1518;
 
-    public bool Bidirectional { get; init; } = true;
+    // A Bidirectional flag lived here and described a mode no engine had. The native engine never
+    // read it, so every hardware run was unidirectional whatever it said, and the simulation read
+    // it to mean "receive nothing" - the opposite of what a unidirectional run does on the wire,
+    // where one end sends and the other receives all of it (measured: 833 Mbps out, 829 in). A
+    // setting that the real engine ignores and the fake one models backwards is worse than no
+    // setting, so it is gone until Phase 4's bidirectional saturation has an engine behind it.
 }
 
 /// <summary>
@@ -50,9 +55,33 @@ public interface IPacketEngine : IAsyncDisposable
 
     EngineState State { get; }
 
+    /// <summary>
+    /// Why the run stopped, or null while it is healthy. Set whenever
+    /// <see cref="State"/> becomes <see cref="EngineState.Faulted"/>.
+    /// </summary>
+    /// <remarks>
+    /// The state alone is not enough to act on. A stopped capture, a stopped transmit, and a
+    /// crashed worker all read as Faulted and mean different things to the person holding the
+    /// cable - and the first of those specifically means the receive count on screen is <b>not</b>
+    /// a measurement of loss, which is the opposite of what it looks like.
+    /// </remarks>
+    string? FaultDescription { get; }
+
     ValueTask StartAsync(EngineRunSettings settings, CancellationToken cancellationToken = default);
 
     ValueTask StopAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Samples the engine produced that this consumer never collected, cumulative for the run.
+    /// </summary>
+    /// <remarks>
+    /// Not frame loss - no traffic is affected, and a run with a large count here is still a valid
+    /// measurement. It matters because the history has a hole: a chart that cannot distinguish a
+    /// gap from continuity draws a line straight across it, so a stretch of screen silently
+    /// represents more elapsed time than it appears to. The count is what lets the consumer mark
+    /// the gap instead.
+    /// </remarks>
+    long DroppedSamples { get; }
 
     /// <summary>
     /// Copies pending samples into <paramref name="destination"/> and returns how many were

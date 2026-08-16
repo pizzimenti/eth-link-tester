@@ -4,6 +4,7 @@ using EthLinkTester.App.Telemetry;
 using EthLinkTester.App.ViewModels;
 using EthLinkTester.Core.Engine;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Navigation;
 
 namespace EthLinkTester.App.Views;
 
@@ -47,7 +48,31 @@ public sealed partial class LabPage : Page, IDisposable
         // application's lifetime and is released with the process.
     }
 
-    private void OnEngineFaulted(object? sender, EventArgs e) => ViewModel.ReportFault();
+    /// <summary>
+    /// Refreshes the adapter list on every visit rather than once at construction. The page is
+    /// cached for the application's lifetime, so a USB adapter plugged in after launch would
+    /// otherwise never appear.
+    /// </summary>
+    protected override async void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        await ViewModel.LoadAdaptersAsync();
+    }
+
+    /// <summary>
+    /// <c>async void</c> because it is an event handler, which is the one place the pattern is
+    /// correct.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="LabViewModel.ReportFaultAsync"/> guards the engine teardown that can realistically
+    /// throw. It is not a blanket guarantee: the property reads, assignments and change
+    /// notifications around that guard sit outside it, and an exception from any of them would
+    /// escape an <c>async void</c> handler onto the dispatcher and terminate the process. The claim
+    /// here used to be that nothing could escape at all, which was a stronger promise than the code
+    /// keeps.
+    /// </remarks>
+    private async void OnEngineFaulted(object? sender, EventArgs e) =>
+        await ViewModel.ReportFaultAsync();
 
     private void OnRunStarted(object? sender, EventArgs e)
     {
@@ -84,6 +109,24 @@ public sealed partial class LabPage : Page, IDisposable
             return;
         }
 
+        // KNOWN LIMITATION - the charts draw straight through a telemetry gap.
+        //
+        // When the ring overwrites samples the host never read, those samples are counted (the
+        // "Telemetry gaps" tile) but not represented here: the next sample is appended right
+        // beside the last one, so a seventeen-second hole is drawn as one sample interval and the
+        // line joins across it as though the run had been continuous. That is the same misleading
+        // continuity the dropped-sample contract exists to expose, surviving in the one place a
+        // user actually looks.
+        //
+        // Not fixed here on purpose. StripChart plots a ScottPlot DataStreamer, which is a
+        // fixed-capacity buffer at a fixed sample interval and carries no per-sample timestamp -
+        // the compression is inherent to that choice, so honest time needs a timestamped x-axis
+        // and a different plot type. The cheap half, appending NaN to break the line, risks
+        // DataStreamer deriving NaN axis limits and blanking the chart, and a WinUI 3 window
+        // cannot be screenshotted here to check (it captures black under both GDI CopyFromScreen
+        // and PrintWindow with PW_RENDERFULLCONTENT), so it would ship unverified.
+        //
+        // Phase 8 owns Lab Mode's charts. This belongs there, with a rig in front of it.
         foreach (ref readonly var sample in samples)
         {
             _throughputChart.Append(sample.TxMegabitsPerSecond, sample.RxMegabitsPerSecond);

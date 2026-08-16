@@ -34,6 +34,77 @@ jobs:
           # global.json pins the SDK band, so this resolves to whatever the repo declares.
           global-json-file: global.json
 
+      # rust-toolchain.toml pins the compiler, so rustup installs what the repo declares rather
+      # than whatever the runner image happens to ship.
+      - name: Set up Rust
+        run: rustup show
+
+      # Npcap's runtime is a user-installed prerequisite its licence forbids redistributing, but
+      # the SDK is a plain zip and is all that linking needs. CI therefore builds the engine
+      # without installing a capture driver: unit tests here are pure logic - ring, histogram,
+      # frame parsing, layout - and anything needing a NIC runs on the bench rig instead.
+      - name: Fetch the Npcap SDK
+        shell: pwsh
+        # The archive is checked before it is opened. The URL is not content-addressed, so this is
+        # the only thing standing between a build and whatever that host serves - and the failure
+        # without it is not obvious: a truncated download expands to a partial Lib directory and
+        # surfaces as an unresolved-symbol error that reads like a code problem.
+        run: |
+          $expected = 'F0A8BE7778EE3AE1B99BBBECB27A3FF0F6C111A4093F1C78C5C5A099607184DB'
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri 'https://npcap.com/dist/npcap-sdk-1.16.zip' -OutFile npcap-sdk.zip
+
+          $actual = (Get-FileHash npcap-sdk.zip -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "npcap-sdk-1.16.zip is not what this repository pinned.`n  expected $expected`n  got      $actual"
+          }
+
+          Expand-Archive -Path npcap-sdk.zip -DestinationPath npcap-sdk -Force
+          $lib = (Resolve-Path npcap-sdk/Lib/x64).Path
+          Add-Content -Path $env:GITHUB_ENV -Value "LIB=$lib;$env:LIB"
+
+      # First, because it needs no build and a formatting diff in review is pure noise that
+      # crowds out the comments worth reading.
+      - name: Check engine formatting
+        working-directory: engine
+        run: cargo fmt --check
+
+      # The scripts in tools\ carry the claim this whole project rests on - that frames reach
+      # copper - and they only ever run on a bench rig with two NICs, which CI does not have. A
+      # syntax error in one would therefore surface at the worst possible moment: in the workshop,
+      # against hardware, when someone is trying to establish a result. Parsing costs nothing and
+      # catches exactly that.
+      - name: Parse the verification scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem tools -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              Write-Host "::error file=tools/$($_.Name)::$($errors.Count) parse error(s)"
+              $errors | ForEach-Object { Write-Host "  line $($_.Extent.StartLineNumber): $($_.Message)" }
+            } else {
+              Write-Host "ok  tools/$($_.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Build the engine
+        working-directory: engine
+        run: cargo build --release --locked
+
+      - name: Test the engine
+        working-directory: engine
+        run: cargo test --release --locked
+
+      # Warnings are failures here for the same reason they are in the managed build: the free
+      # signals are the cheapest defects to fix and the easiest to start ignoring.
+      - name: Lint the engine
+        working-directory: engine
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+
       - name: Restore
         run: dotnet restore
 

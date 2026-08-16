@@ -34,7 +34,7 @@ public class TelemetrySampleLayoutTests
     [InlineData(nameof(TelemetrySample.LatencyP99Microseconds), 32)]
     [InlineData(nameof(TelemetrySample.TxFrames), 40)]
     [InlineData(nameof(TelemetrySample.RxFrames), 48)]
-    [InlineData(nameof(TelemetrySample.RxErrors), 56)]
+    [InlineData(nameof(TelemetrySample.RxCaptureDrops), 56)]
     public void FieldSitsAtItsAgreedOffset(string property, int expectedOffset)
     {
         // Auto-properties are backed by a compiler-named field; match on the property name inside.
@@ -68,7 +68,7 @@ public class TelemetrySampleLayoutTests
             LatencyP99Microseconds = 880.75,
             TxFrames = 8_000_000,
             RxFrames = 7_999_997,
-            RxErrors = 3,
+            RxCaptureDrops = 3,
         };
 
         Span<TelemetrySample> one = [original];

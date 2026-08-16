@@ -1,0 +1,29 @@
+[package]
+name = "ethlink-engine"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT"
+description = "Raw L2 traffic engine for eth-link-tester"
+
+# cdylib for the C# host to P/Invoke; rlib so the verification binaries can link it directly.
+[lib]
+name = "ethlink_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pcap = "2"
+
+[profile.release]
+# The measurement loop must not be interrupted by work the optimiser could have done. Full LTO and
+# a single codegen unit cost build time, which nobody measures, and buy tail latency, which is the
+# whole signal a marginal cable shows up in.
+lto = "fat"
+codegen-units = 1
+
+# Deliberately NOT panic = "abort", which is the usual advice for a cdylib. Unwinding across an FFI
+# boundary is undefined behaviour, so every extern "C" entry point catches instead - see the ffi
+# module. Aborting would be safe for the engine and wrong for the system: the managed host is the
+# only thing that knows how to put a forced adapter back, and killing the process mid-run strands
+# the NIC at whatever speed the run set it to. An engine bug must fail the run, not the recovery.
+panic = "unwind"

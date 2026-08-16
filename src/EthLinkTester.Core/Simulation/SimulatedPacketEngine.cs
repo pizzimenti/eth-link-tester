@@ -52,9 +52,6 @@ public sealed class SimulatedPacketEngine : IPacketEngine
     /// </summary>
     private const int MaxBacklogSamples = SampleRateHz * 2;
 
-    /// <summary>Bytes added per frame on the wire: 8-byte preamble plus a 12-byte interframe gap.</summary>
-    private const int WireOverheadBytes = 20;
-
     private readonly TimeProvider _timeProvider;
     private readonly Random _random;
     private readonly SimulationProfile _profile;
@@ -85,6 +82,9 @@ public sealed class SimulatedPacketEngine : IPacketEngine
 
     public EngineState State { get; private set; } = EngineState.Idle;
 
+    /// <summary>Always null: a simulated run has nothing to go wrong with.</summary>
+    public string? FaultDescription => null;
+
     public SimulationProfile Profile => _profile;
 
     public ValueTask StartAsync(EngineRunSettings settings, CancellationToken cancellationToken = default)
@@ -98,6 +98,9 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         _rxFrames = 0;
         _rxErrors = 0;
         _errorRemainder = 0;
+        // Reset with the rest. DroppedSamples is per-run, so carrying it over made a fresh
+        // experiment open by reporting telemetry gaps that belonged to the previous one.
+        _droppedSamples = 0;
         State = EngineState.Running;
 
         return ValueTask.CompletedTask;
@@ -109,6 +112,15 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         State = EngineState.Idle;
         return ValueTask.CompletedTask;
     }
+
+    private long _droppedSamples;
+
+    /// <summary>
+    /// Samples discarded because the consumer fell behind. The simulator models this because the
+    /// native engine's ring genuinely overwrites, and a consumer that only ever meets a
+    /// well-behaved producer will not have handled the case when it meets a real one.
+    /// </summary>
+    public long DroppedSamples => _droppedSamples;
 
     public int Drain(Span<TelemetrySample> destination)
     {
@@ -144,6 +156,7 @@ public sealed class SimulatedPacketEngine : IPacketEngine
             var dropped = due - MaxBacklogSamples;
             AccrueCounters(dropped, interval);
             _lastSampleTimestamp += dropped * timestampPerSample;
+            _droppedSamples += dropped;
             due = MaxBacklogSamples;
         }
 
@@ -173,11 +186,20 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         var lineRateMbps = (double)settings.LinkSpeed.MegabitsPerSecond();
 
         var txMbps = Jitter(lineRateMbps * shape.ThroughputFraction, shape.ThroughputJitter);
-        var rxMbps = settings.Bidirectional ? Jitter(txMbps, shape.ThroughputJitter / 2) : 0;
+        // Receive tracks transmit, because that is what the far end of a healthy link does. The
+        // jitter is halved: the receiver counts whole frames the sender already paid the
+        // variability for, so its figure is the smoother of the two on real hardware too.
+        var rxMbps = Jitter(txMbps, shape.ThroughputJitter / 2);
 
-        _txFrames += FramesFor(txMbps, intervalSeconds);
-        _rxFrames += FramesFor(rxMbps, intervalSeconds);
-        AccrueErrors(shape.ErrorsPerSecond * intervalSeconds);
+        // Receives are derived from transmits minus modelled loss, never accumulated from the
+        // jittered receive rate. Accumulating them independently let the two counters drift apart
+        // by far more than the errors being modelled - so RxFrames routinely finished *above*
+        // TxFrames, and the documented "loss is TxFrames minus RxFrames" then read as negative
+        // loss and better than 100% delivery, on the Failing profile. The jitter belongs to the
+        // rate on the chart, which is a display of an instant; the counters are the ledger.
+        var sent = FramesFor(txMbps, intervalSeconds);
+        _txFrames += sent;
+        _rxFrames += Math.Max(0, sent - AccrueErrors(shape.ErrorsPerSecond * intervalSeconds));
 
         return new TelemetrySample
         {
@@ -187,8 +209,25 @@ public sealed class SimulatedPacketEngine : IPacketEngine
             LatencyP50Microseconds = Jitter(shape.LatencyP50Microseconds, 0.15),
             LatencyP99Microseconds = Jitter(shape.LatencyP99Microseconds, 0.30),
             TxFrames = _txFrames,
+            // Already net of loss - see where _rxFrames is accumulated. Loss caused by a cable
+            // shows up in no receive counter, because the frame never arrives to be counted, so it
+            // exists solely as this gap between what was sent and what was received. That is how
+            // the real engine surfaces it and what Phase 6's grading will read.
             RxFrames = _rxFrames,
-            RxErrors = _rxErrors,
+            // Zero, not `_rxErrors`. That field is the profile's *cable* error model, and
+            // RxCaptureDrops means frames the host's own capture buffer lost - a property of how
+            // busy this machine is, which is why it rises on a fast link with a perfect cable and
+            // stays at zero on a broken one. Publishing cable errors through it taught the UI the
+            // wrong fault signature: a Marginal profile rendered as host-side capture overload,
+            // and the tile that exists to say "this measurement may be incomplete" said "this
+            // cable is bad".
+            //
+            // The simulated host keeps up, so this is genuinely zero. The cable errors have
+            // nowhere to go: TelemetrySample is pinned at 64 bytes and carries no field for them,
+            // because the engine cannot see them either - loss caused by a cable appears in no
+            // receive counter and has to be derived from TxFrames minus RxFrames. Grading in
+            // Phase 6 is what needs them, and it will need somewhere to put them.
+            RxCaptureDrops = 0,
         };
     }
 
@@ -215,15 +254,20 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         var seconds = sampleCount * intervalSeconds;
         var meanMbps = settings.LinkSpeed.MegabitsPerSecond() * shape.ThroughputFraction;
 
-        _txFrames += FramesFor(meanMbps, seconds);
-        _rxFrames += settings.Bidirectional ? FramesFor(meanMbps, seconds) : 0;
-        AccrueErrors(shape.ErrorsPerSecond * seconds);
+        var sent = FramesFor(meanMbps, seconds);
+        _txFrames += sent;
+        _rxFrames += Math.Max(0, sent - AccrueErrors(shape.ErrorsPerSecond * seconds));
     }
 
     /// <summary>Frames carried at <paramref name="megabitsPerSecond"/> over a span, from the on-wire frame size.</summary>
+    /// <remarks>
+    /// The wire cost comes from <see cref="EthernetFrame"/> rather than a local constant. Both
+    /// engines used to define it for themselves and disagreed by 29% at 64-byte frames, which made
+    /// the same cable grade differently depending on which one measured it.
+    /// </remarks>
     private long FramesFor(double megabitsPerSecond, double seconds)
     {
-        var wireBits = (_settings!.FrameBytes + WireOverheadBytes) * 8.0;
+        var wireBits = EthernetFrame.WireBytes(_settings!.FrameBytes) * 8.0;
         return (long)(megabitsPerSecond * 1_000_000 / wireBits * seconds);
     }
 
@@ -231,12 +275,14 @@ public sealed class SimulatedPacketEngine : IPacketEngine
     /// Carries the fractional part forward so an error rate below one per sample still yields
     /// occasional whole errors instead of flooring to zero forever.
     /// </summary>
-    private void AccrueErrors(double errors)
+    /// <returns>Whole errors accrued by this call, which is what the caller must not deliver.</returns>
+    private long AccrueErrors(double errors)
     {
         _errorRemainder += errors;
         var whole = (long)_errorRemainder;
         _errorRemainder -= whole;
         _rxErrors += whole;
+        return whole;
     }
 
     /// <summary>Applies +/- <paramref name="fraction"/> uniform noise, clamped at zero.</summary>

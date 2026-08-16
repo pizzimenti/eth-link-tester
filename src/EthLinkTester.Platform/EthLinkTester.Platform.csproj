@@ -7,6 +7,12 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <!--
+      The telemetry drain pins a caller-owned span and hands its address to the engine, which is
+      the whole point of the contract: samples are copied in bulk with nothing allocated per
+      sample. That needs a fixed statement, and a fixed statement needs this.
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,6 +23,29 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EthLinkTester.Core\EthLinkTester.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Copies the engine next to the managed output when it has been built. Deliberately conditional
+    rather than invoking cargo: a developer working on the UI should not need a Rust toolchain to
+    build, and CI builds the engine as its own step. A missing DLL then surfaces at run time as the
+    Npcap preflight failing, which is actionable, rather than as a build error nobody working on
+    XAML can do anything about.
+  -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\..\engine\target\release\ethlink_engine.dll"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\..\engine\target\release\ethlink_engine.dll')">
+      <Link>ethlink_engine.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <!--
+        Flows to anything referencing this project. A Copy target would land the engine only in
+        this project's own output, and every host that matters - the app, a test host, a scratch
+        harness - builds into a different directory, so the resolver would look beside the assembly
+        and find nothing.
+      -->
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </None>
   </ItemGroup>
 
 </Project>
