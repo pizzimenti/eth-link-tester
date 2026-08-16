@@ -28,6 +28,7 @@ pub mod ffi;
 pub mod frame;
 pub mod histogram;
 pub mod ring;
+pub mod topology;
 
 pub use engine::{Engine, EngineFault, RunConfig, StartError};
 
