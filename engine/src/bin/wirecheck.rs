@@ -47,6 +47,15 @@ fn main() {
     let rx_mac = mac(&args[4]).expect("bad RX MAC");
     let count: u32 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);
 
+    // A zero-frame run sends nothing, skips the receive loop, and satisfies `unique == count` -
+    // so the tool whose output is the project's central evidence would print EVERY FRAME ARRIVED
+    // and exit successfully having proven nothing. Verify-Wire.ps1 rejects zero, but this binary
+    // is documented and run on its own, so it has to reject it too.
+    if count == 0 {
+        eprintln!("count must be at least 1: a zero-frame run proves nothing.");
+        std::process::exit(2);
+    }
+
     let tx_name = device(&args[1]).expect("no device matching the TX GUID");
     let rx_name = device(&args[2]).expect("no device matching the RX GUID");
     println!("  TX {tx_name}");

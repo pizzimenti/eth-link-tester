@@ -389,6 +389,17 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         {
             var found = await _provider.GetPhysicalAdaptersAsync();
 
+            // Checked again on the way out of the await. The guard at the top of this method ran
+            // before it, and enumeration is slow enough for a run to start meanwhile - the page is
+            // cached, so OnNavigatedTo fires a refresh on every visit while old selections keep
+            // Start enabled. Replacing the selections during a live run makes the UI name adapters
+            // the engine is not using and can rewrite the displayed link speed, while the engine
+            // goes on measuring against the pair and rate it captured at Start.
+            if (IsRunning)
+            {
+                return true;
+            }
+
             var previousTransmit = TransmitAdapter?.Id;
             var previousReceive = ReceiveAdapter?.Id;
 
@@ -565,6 +576,19 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             ErrorMessage =
                 "The selected adapters changed while the page was open. Check the selection and "
                 + "start again.";
+            return false;
+        }
+
+        // The safety gate again, against the refreshed flags. CanStart enabled the button using
+        // the metadata the page loaded with, and an adapter can acquire the default route between
+        // then and now - Windows re-homing the route when another link drops, a VPN going away.
+        // The ids still match, so the check above passes; the refresh even clears the
+        // acknowledgement, because assigning the selections raises the changed handlers. Without
+        // this the run started anyway, unacknowledged, on the NIC now carrying the network.
+        if (TargetsDefaultRoute && !DefaultRouteAcknowledged)
+        {
+            ErrorMessage =
+                $"{DefaultRouteWarning} Confirm the warning above and start again.";
             return false;
         }
 

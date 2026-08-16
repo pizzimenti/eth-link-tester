@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use ethlink_engine::diag::{device, mac, require_npcap};
-use ethlink_engine::{Engine, RunConfig, TelemetrySample};
+use ethlink_engine::{Engine, EngineFault, RunConfig, TelemetrySample};
 
 /// How long to keep receiving after transmit stops, before delivery is counted.
 ///
@@ -130,4 +130,14 @@ fn main() {
         "capture drops   : {}  (our buffer, not the cable)",
         last.rx_errors
     );
+
+    // Nonzero on a fault, because a caller cannot tell otherwise. tools\Measure-Link.ps1 treats
+    // only a nonzero exit as an incomplete run, so a faulted run exiting 0 had its hardware
+    // deltas and delivery figures published as a valid measurement - a run that stopped
+    // transmitting half way through, or one that reported an impossible rate because the link
+    // dropped, presented as characterising the cable.
+    if fault != EngineFault::None {
+        eprintln!("\nThe run faulted, so these figures do not characterise the link.");
+        std::process::exit(1);
+    }
 }
