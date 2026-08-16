@@ -9,6 +9,15 @@ use std::time::{Duration, Instant};
 use ethlink_engine::diag::{device, mac, require_npcap};
 use ethlink_engine::{Engine, RunConfig, TelemetrySample};
 
+/// How long to keep receiving after transmit stops, before delivery is counted.
+///
+/// Needs to cover the driver's send queue draining (4 ms of wire time by construction) plus a
+/// sampler interval for the receive thread to fold its kernel counts in (16.7 ms), plus the
+/// latency of the frames themselves. 500 ms is two orders of magnitude more than that sum and
+/// costs nothing on a run measured in seconds - the only thing a longer wait can add is confidence
+/// that a frame counted as lost really is lost.
+const QUIESCE: Duration = Duration::from_millis(500);
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
@@ -76,6 +85,25 @@ fn main() {
         }
     }
 
+    // Stop sending, then keep draining while the wire and the sampler catch up. Without this the
+    // delivered figure is read with frames still in the driver's send queue and with the receive
+    // thread's kernel counts not yet folded in - both count as sent and not received, so a healthy
+    // link reports a few tenths of a percent of loss that is entirely an artefact of when the
+    // question was asked. At 1518 bytes the artefact is the same size as the loss it was being
+    // read as.
+    engine.stop_transmit();
+    let in_flight = last;
+    let settle_started = Instant::now();
+    while settle_started.elapsed() < QUIESCE {
+        std::thread::sleep(Duration::from_millis(100));
+        let drained = engine.ring().drain(&mut buffer);
+        total_dropped += drained.dropped;
+        samples_seen += drained.count;
+        if drained.count > 0 {
+            last = buffer[drained.count - 1];
+        }
+    }
+
     let fault = engine.fault();
     engine.stop();
 
@@ -87,6 +115,11 @@ fn main() {
 
     println!("\nfault           : {fault:?}");
     println!("samples drained : {samples_seen}");
+    println!(
+        "quiesce         : {} ms  (rx +{} frames after transmit stopped)",
+        QUIESCE.as_millis(),
+        last.rx_frames.saturating_sub(in_flight.rx_frames)
+    );
     println!("ring drops      : {total_dropped}  (telemetry lost to a slow consumer, not frames)");
     println!("tx frames       : {}", last.tx_frames);
     println!(

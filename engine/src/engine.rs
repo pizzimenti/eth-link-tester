@@ -229,6 +229,15 @@ impl Counters {
 
 pub struct Engine {
     running: Arc<AtomicBool>,
+    /// Cleared on its own by [`Engine::stop_transmit`], and by `stop` along with `running`.
+    ///
+    /// Transmit needs a flag of its own because the last frames sent are still in flight when
+    /// transmit ends: the driver's send queue holds up to `SEND_QUEUE_WIRE_TIME` of traffic, and
+    /// the receive thread only folds its kernel counts into the shared totals once per sample.
+    /// Counting delivery at that instant charges every frame in either gap to loss. One flag for
+    /// all three threads made that unavoidable - the only way to stop sending was to stop
+    /// receiving in the same breath.
+    transmitting: Arc<AtomicBool>,
     ring: Arc<TelemetryRing>,
     counters: Arc<Counters>,
     threads: Vec<JoinHandle<()>>,
@@ -273,6 +282,7 @@ impl Engine {
         // them instead.
         let mut engine = Self {
             running: Arc::new(AtomicBool::new(true)),
+            transmitting: Arc::new(AtomicBool::new(true)),
             ring: Arc::new(TelemetryRing::new()),
             counters,
             threads: Vec::with_capacity(3),
@@ -291,7 +301,7 @@ impl Engine {
             tx_capture,
             config,
             run_id,
-            Arc::clone(&engine.running),
+            Arc::clone(&engine.transmitting),
             Arc::clone(&engine.counters),
             epoch,
         ));
@@ -325,7 +335,24 @@ impl Engine {
         }
     }
 
+    /// Stops sending while receive and the sampler keep running.
+    ///
+    /// Delivery counted the instant transmit ends is always short, and by a fixed amount rather
+    /// than a random one: frames sit in the driver's send queue for up to `SEND_QUEUE_WIRE_TIME`
+    /// after the last `sendpacket` returns, and the receive thread folds its kernel counts into
+    /// the shared totals only once per `SAMPLE_INTERVAL`. Both gaps count a frame as sent and not
+    /// as received, which is indistinguishable from loss and biased in one direction, so it does
+    /// not average out over a longer run - it shrinks, which is worse, because the same rig then
+    /// reports a different loss figure for the same cable depending on how long it was measured.
+    ///
+    /// Call this, wait for the wire and the sampler to settle, then read the totals. It is also
+    /// what RFC 2544 prescribes: stop the stream, wait, then count what arrived.
+    pub fn stop_transmit(&self) {
+        self.transmitting.store(false, Ordering::Release);
+    }
+
     pub fn stop(&mut self) {
+        self.transmitting.store(false, Ordering::Release);
         self.running.store(false, Ordering::Release);
         for handle in self.threads.drain(..) {
             let _ = handle.join();
@@ -488,7 +515,7 @@ fn spawn_tx(
     mut capture: pcap::Capture<pcap::Active>,
     config: RunConfig,
     run_id: u16,
-    running: Arc<AtomicBool>,
+    transmitting: Arc<AtomicBool>,
     counters: Arc<Counters>,
     epoch: Instant,
 ) -> JoinHandle<()> {
@@ -508,7 +535,7 @@ fn spawn_tx(
 
             let mut seq = 0u32;
 
-            while running.load(Ordering::Acquire) {
+            while transmitting.load(Ordering::Acquire) {
                 // The bulk of a batch carries no timestamp at all. A frame stamped on its way into
                 // the queue would report the time it spent waiting for the frames ahead of it,
                 // which measures this queue rather than the link - at 64 bytes that pushed both

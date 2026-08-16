@@ -89,14 +89,37 @@ fn main() {
         "\nsent     : {count} in {:.1} ms",
         send_elapsed.as_secs_f64() * 1000.0
     );
-    println!("received : {received}");
+    println!("received : {received} of {count}");
     println!("first seq: {first_seq:?}");
+
+    // Every frame, not merely some. The old threshold was `received > 0`, which passes while 999
+    // of 1000 are lost - and the number this tool exists to support is 1000 for 1000.
+    let all_arrived = received == count;
+
     println!(
         "\nVERDICT  : {}",
-        if received > 0 {
-            "FRAMES CROSSED THE WIRE"
-        } else {
-            "NOTHING ARRIVED - premise not proven"
+        match (all_arrived, received) {
+            (true, _) => "EVERY FRAME ARRIVED".to_owned(),
+            (false, 0) => "NOTHING ARRIVED - premise not proven".to_owned(),
+            (false, _) => format!("FAILED - only {received} of {count} arrived"),
         }
     );
+
+    // Deliberately not claiming the frames touched copper. This tool counts frames in userspace at
+    // both ends, and userspace cannot tell a frame that crossed a cable from one a bridge handed
+    // back: a loop forwards our frame with its destination MAC unchanged, so it is byte-identical
+    // to the real thing, and a capture on the sending adapter sees that adapter's own outbound
+    // copy regardless. `pcap_setdirection` would separate them and Npcap does not implement it
+    // (verified on 1.88 - the handle is refused).
+    //
+    // The instrument that *can* answer it is the NIC's own counters, which is why the claim has
+    // always been phrased in terms of them. tools\Verify-Wire.ps1 brackets this run with those
+    // counters and checks the reverse direction; run it rather than this when the question is
+    // whether the premise holds.
+    println!(
+        "\nThis counts frames in userspace only. For the hardware-counter confirmation, and the\n\
+         reverse-traffic check that rules out a bridge, run tools\\Verify-Wire.ps1."
+    );
+
+    std::process::exit(i32::from(!all_arrived));
 }

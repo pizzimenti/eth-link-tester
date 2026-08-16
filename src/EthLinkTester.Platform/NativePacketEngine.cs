@@ -12,9 +12,11 @@ namespace EthLinkTester.Platform;
 /// <para>
 /// Frames must not go over sockets. With two NICs in one host the TCP/IP stack recognises both
 /// addresses as local and short-circuits through loopback, so a socket test measures memory
-/// bandwidth. That this implementation avoids it is not an assumption - the engine's own
-/// <c>wirecheck</c> proved 1000 frames leaving one PHY and arriving at the other, counted
-/// independently by both NICs' hardware.
+/// bandwidth. That this implementation avoids it is not an assumption - <c>tools\Verify-Wire.ps1</c>
+/// asserts 1000 frames leaving one PHY and arriving at the other, counted independently by both
+/// NICs' hardware, with nothing coming back on the sender. The <c>wirecheck</c> binary it wraps
+/// counts frames in userspace only, which cannot tell a frame that crossed a cable from one a
+/// bridge handed back; the counter assertions are what make the claim.
 /// </para>
 /// <para>
 /// Native failures come back as codes rather than exceptions crossing the boundary, and the

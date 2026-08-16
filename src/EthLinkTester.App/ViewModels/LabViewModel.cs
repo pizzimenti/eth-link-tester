@@ -365,6 +365,16 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
         try
         {
+            // Re-read the rig before measuring against it. An AdapterOption carries the speed the
+            // link had negotiated when the page last loaded, and on a bench the cable is plugged
+            // and unplugged between visits: load the page unplugged and the negotiated speed is
+            // null, so LinkSpeed keeps its 1 Gbps default; plug into a 2.5 G partner and press
+            // Start, and healthy traffic is measured against a threshold two and a half times too
+            // low. It reads as TransmitExceedsLineRate - a fault that tears down a good run and
+            // reports frames being discarded, which is the opposite of what is happening.
+            await LoadAdaptersAsync();
+            AdoptNegotiatedLinkSpeed();
+
             await DisposeEngineAsync();
             _engine = CreateEngine();
 

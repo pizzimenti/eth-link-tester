@@ -19,7 +19,12 @@ public sealed record EngineRunSettings
     /// </summary>
     public int FrameBytes { get; init; } = 1518;
 
-    public bool Bidirectional { get; init; } = true;
+    // A Bidirectional flag lived here and described a mode no engine had. The native engine never
+    // read it, so every hardware run was unidirectional whatever it said, and the simulation read
+    // it to mean "receive nothing" - the opposite of what a unidirectional run does on the wire,
+    // where one end sends and the other receives all of it (measured: 833 Mbps out, 829 in). A
+    // setting that the real engine ignores and the fake one models backwards is worse than no
+    // setting, so it is gone until Phase 4's bidirectional saturation has an engine behind it.
 }
 
 /// <summary>

@@ -69,6 +69,28 @@ jobs:
         working-directory: engine
         run: cargo fmt --check
 
+      # The scripts in tools\ carry the claim this whole project rests on - that frames reach
+      # copper - and they only ever run on a bench rig with two NICs, which CI does not have. A
+      # syntax error in one would therefore surface at the worst possible moment: in the workshop,
+      # against hardware, when someone is trying to establish a result. Parsing costs nothing and
+      # catches exactly that.
+      - name: Parse the verification scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem tools -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              Write-Host "::error file=tools/$($_.Name)::$($errors.Count) parse error(s)"
+              $errors | ForEach-Object { Write-Host "  line $($_.Extent.StartLineNumber): $($_.Message)" }
+            } else {
+              Write-Host "ok  tools/$($_.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
       - name: Build the engine
         working-directory: engine
         run: cargo build --release --locked

@@ -183,7 +183,10 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         var lineRateMbps = (double)settings.LinkSpeed.MegabitsPerSecond();
 
         var txMbps = Jitter(lineRateMbps * shape.ThroughputFraction, shape.ThroughputJitter);
-        var rxMbps = settings.Bidirectional ? Jitter(txMbps, shape.ThroughputJitter / 2) : 0;
+        // Receive tracks transmit, because that is what the far end of a healthy link does. The
+        // jitter is halved: the receiver counts whole frames the sender already paid the
+        // variability for, so its figure is the smoother of the two on real hardware too.
+        var rxMbps = Jitter(txMbps, shape.ThroughputJitter / 2);
 
         _txFrames += FramesFor(txMbps, intervalSeconds);
         _rxFrames += FramesFor(rxMbps, intervalSeconds);
@@ -226,7 +229,7 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         var meanMbps = settings.LinkSpeed.MegabitsPerSecond() * shape.ThroughputFraction;
 
         _txFrames += FramesFor(meanMbps, seconds);
-        _rxFrames += settings.Bidirectional ? FramesFor(meanMbps, seconds) : 0;
+        _rxFrames += FramesFor(meanMbps, seconds);
         AccrueErrors(shape.ErrorsPerSecond * seconds);
     }
 

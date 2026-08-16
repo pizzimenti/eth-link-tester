@@ -210,19 +210,37 @@ public class SimulatedPacketEngineTests
         Assert.Equal(0, engine.Drain(new TelemetrySample[SampleRateHz * 4]));
     }
 
+    /// <summary>
+    /// A run reports receive throughput that tracks transmit, which is what the far end of a
+    /// healthy link actually does.
+    /// </summary>
+    /// <remarks>
+    /// This replaces a test asserting the opposite. A `Bidirectional = false` run used to be
+    /// modelled as receiving nothing, which described no real configuration: one end transmitting
+    /// and the other receiving all of it is exactly what every hardware run does - 833 Mbps out
+    /// and 829 in, measured. The simulation was teaching the UI a shape the engine never produces.
+    /// </remarks>
     [Fact]
-    public async Task UnidirectionalRunReportsNoReceiveTraffic()
+    public async Task ReceiveThroughputTracksTransmit()
     {
         var clock = new TestClock();
         var engine = new SimulatedPacketEngine(SimulationProfile.Healthy, clock);
-        await engine.StartAsync(new EngineRunSettings { LinkSpeed = LinkSpeed.Mbps1000, Bidirectional = false });
+        await engine.StartAsync(new EngineRunSettings { LinkSpeed = LinkSpeed.Mbps1000 });
         clock.Advance(TimeSpan.FromSeconds(1));
 
         var buffer = new TelemetrySample[SampleRateHz * 4];
         var written = engine.Drain(buffer);
 
         Assert.True(written > 0);
-        Assert.All(buffer[..written], s => Assert.Equal(0, s.RxMegabitsPerSecond));
+        Assert.All(
+            buffer[..written],
+            s =>
+            {
+                Assert.True(s.RxMegabitsPerSecond > 0);
+                // Generous, because the point is that receive follows transmit rather than that
+                // the simulation's jitter lands on any particular number.
+                Assert.InRange(s.RxMegabitsPerSecond, s.TxMegabitsPerSecond * 0.5, s.TxMegabitsPerSecond * 1.5);
+            });
     }
 
     [Fact]

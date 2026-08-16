@@ -58,8 +58,21 @@ public readonly record struct TelemetrySample
     /// completeness, not a measurement of the link.
     /// <para>
     /// Real frame loss is <c>TxFrames</c> minus <c>RxFrames</c> - two counters read from two
-    /// drivers - cross-checked against the adapters' own hardware counters. Loss caused by a cable
-    /// appears in no receive counter at all, which is why it has to be derived rather than read.
+    /// drivers. Loss caused by a cable appears in no receive counter at all, which is why it has
+    /// to be derived rather than read.
+    /// </para>
+    /// <para>
+    /// That difference is only loss once transmit has stopped and the wire has drained. Read while
+    /// a run is in flight it is always short, and by a fixed amount rather than a random one: the
+    /// driver's send queue still holds frames counted as sent, and the receive thread folds its
+    /// kernel counts in only once per sample. On this rig that artefact was 0.3% at 1518 bytes -
+    /// the same size as the loss it was being read as, and the reason a healthy cable used to
+    /// report 99.7% delivered instead of 100.00%. <c>Engine::stop_transmit</c> exists to close it.
+    /// </para>
+    /// <para>
+    /// Nothing in the running engine cross-checks these against the adapters' own hardware
+    /// counters. <c>tools\Measure-Link.ps1</c> does it around a run, and that is where a
+    /// disagreement between the software and hardware counts becomes visible.
     /// </para>
     /// </remarks>
     public required long RxCaptureDrops { get; init; }
