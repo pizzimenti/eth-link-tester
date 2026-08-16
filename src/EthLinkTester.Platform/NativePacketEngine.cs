@@ -209,8 +209,46 @@ public sealed class NativePacketEngine : IPacketEngine
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask StopAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// How long receive keeps running after transmit stops, before the engine is torn down.
+    /// </summary>
+    /// <remarks>
+    /// Covers the driver's send queue draining (4 ms of wire time by construction), a sampler
+    /// interval for the receive thread to fold its kernel counts in (16.7 ms), and the flight time
+    /// of the frames themselves. 500 ms is two orders of magnitude more than that sum, and the
+    /// only thing a longer wait can add is confidence that a frame counted as lost really is lost.
+    /// </remarks>
+    private static readonly TimeSpan Quiesce = TimeSpan.FromMilliseconds(500);
+
+    public async ValueTask StopAsync(CancellationToken cancellationToken = default)
     {
+        // Stop sending first, then let the wire and the sampler catch up, then tear down. Counting
+        // delivery at the instant transmit ends is short by a fixed amount rather than a random
+        // one - frames sitting in the driver's send queue are counted as sent and not yet as
+        // received, and the receive thread has kernel counts it has not folded in - so a healthy
+        // cable reports loss that is entirely an artefact of when the question was asked. Measured
+        // at 0.3% at 1518 bytes on the reference rig, which is the same size as the loss it was
+        // being read as.
+        //
+        // The host keeps draining across this window, so the final samples carry the settled
+        // totals. Without it, this engine had the artefact that `enginerun` was fixed for - the
+        // number in the app and the number in the tool disagreed about the same cable.
+        if (_handle != IntPtr.Zero)
+        {
+            _ = elt_engine_stop_transmit(_handle);
+
+            try
+            {
+                await Task.Delay(Quiesce, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // A cancelled stop still has to stop. Skipping the settle costs accuracy in the
+                // final sample; skipping the teardown would leave three threads and two capture
+                // devices running.
+            }
+        }
+
         // Claimed atomically, because the finalizer can run on another thread while this method is
         // in flight - the object becomes unreachable the moment nothing holds it, which is before
         // DisposeAsync gets to SuppressFinalize. A plain read-then-clear lets both threads see the
@@ -230,12 +268,11 @@ public sealed class NativePacketEngine : IPacketEngine
             if (code != 0)
             {
                 Fault($"The engine did not shut down cleanly: {Describe(code)}");
-                return ValueTask.CompletedTask;
+                return;
             }
         }
 
         State = EngineState.Idle;
-        return ValueTask.CompletedTask;
     }
 
     public int Drain(Span<TelemetrySample> destination)
@@ -401,6 +438,9 @@ public sealed class NativePacketEngine : IPacketEngine
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int elt_engine_stop(IntPtr handle);
+
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int elt_engine_stop_transmit(IntPtr handle);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern uint elt_sample_size();

@@ -191,9 +191,15 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         // variability for, so its figure is the smoother of the two on real hardware too.
         var rxMbps = Jitter(txMbps, shape.ThroughputJitter / 2);
 
-        _txFrames += FramesFor(txMbps, intervalSeconds);
-        _rxFrames += FramesFor(rxMbps, intervalSeconds);
-        AccrueErrors(shape.ErrorsPerSecond * intervalSeconds);
+        // Receives are derived from transmits minus modelled loss, never accumulated from the
+        // jittered receive rate. Accumulating them independently let the two counters drift apart
+        // by far more than the errors being modelled - so RxFrames routinely finished *above*
+        // TxFrames, and the documented "loss is TxFrames minus RxFrames" then read as negative
+        // loss and better than 100% delivery, on the Failing profile. The jitter belongs to the
+        // rate on the chart, which is a display of an instant; the counters are the ledger.
+        var sent = FramesFor(txMbps, intervalSeconds);
+        _txFrames += sent;
+        _rxFrames += Math.Max(0, sent - AccrueErrors(shape.ErrorsPerSecond * intervalSeconds));
 
         return new TelemetrySample
         {
@@ -203,12 +209,11 @@ public sealed class SimulatedPacketEngine : IPacketEngine
             LatencyP50Microseconds = Jitter(shape.LatencyP50Microseconds, 0.15),
             LatencyP99Microseconds = Jitter(shape.LatencyP99Microseconds, 0.30),
             TxFrames = _txFrames,
-            // Net of the profile's cable errors, because that is the only way a cable's losses can
-            // appear at all. Loss caused by a cable shows up in no receive counter - the frame
-            // never arrives to be counted - so it exists solely as the gap between what was sent
-            // and what was received, which is precisely how the real engine surfaces it and what
-            // Phase 6's grading will read.
-            RxFrames = Math.Max(0, _rxFrames - _rxErrors),
+            // Already net of loss - see where _rxFrames is accumulated. Loss caused by a cable
+            // shows up in no receive counter, because the frame never arrives to be counted, so it
+            // exists solely as this gap between what was sent and what was received. That is how
+            // the real engine surfaces it and what Phase 6's grading will read.
+            RxFrames = _rxFrames,
             // Zero, not `_rxErrors`. That field is the profile's *cable* error model, and
             // RxCaptureDrops means frames the host's own capture buffer lost - a property of how
             // busy this machine is, which is why it rises on a fast link with a perfect cable and
@@ -249,9 +254,9 @@ public sealed class SimulatedPacketEngine : IPacketEngine
         var seconds = sampleCount * intervalSeconds;
         var meanMbps = settings.LinkSpeed.MegabitsPerSecond() * shape.ThroughputFraction;
 
-        _txFrames += FramesFor(meanMbps, seconds);
-        _rxFrames += FramesFor(meanMbps, seconds);
-        AccrueErrors(shape.ErrorsPerSecond * seconds);
+        var sent = FramesFor(meanMbps, seconds);
+        _txFrames += sent;
+        _rxFrames += Math.Max(0, sent - AccrueErrors(shape.ErrorsPerSecond * seconds));
     }
 
     /// <summary>Frames carried at <paramref name="megabitsPerSecond"/> over a span, from the on-wire frame size.</summary>
@@ -270,12 +275,14 @@ public sealed class SimulatedPacketEngine : IPacketEngine
     /// Carries the fractional part forward so an error rate below one per sample still yields
     /// occasional whole errors instead of flooring to zero forever.
     /// </summary>
-    private void AccrueErrors(double errors)
+    /// <returns>Whole errors accrued by this call, which is what the caller must not deliver.</returns>
+    private long AccrueErrors(double errors)
     {
         _errorRemainder += errors;
         var whole = (long)_errorRemainder;
         _errorRemainder -= whole;
         _rxErrors += whole;
+        return whole;
     }
 
     /// <summary>Applies +/- <paramref name="fraction"/> uniform noise, clamped at zero.</summary>

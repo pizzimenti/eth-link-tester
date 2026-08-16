@@ -23,7 +23,8 @@ internal sealed record LinkSpeedOption(LinkSpeed Value, string Label);
 /// The MAC is carried as bytes rather than re-parsed at start, so an adapter whose address the
 /// framework cannot read is excluded from the list instead of failing when the user presses Start.
 /// </remarks>
-internal sealed record AdapterOption(string Id, string Label, LinkSpeed? NegotiatedSpeed)
+internal sealed record AdapterOption(
+    string Id, string Label, LinkSpeed? NegotiatedSpeed, bool CarriesDefaultRoute)
 {
     /// <summary>The adapter's hardware address, six bytes.</summary>
     /// <remarks>
@@ -124,16 +125,34 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     // banner only corrected itself when a run started, so switching from Hardware to Simulated
     // while idle left it hidden - which is precisely the failure this file calls unacceptable.
     [NotifyPropertyChangedFor(nameof(IsSimulated))]
+    // The default-route hazard applies to hardware runs only, so both follow the source.
+    [NotifyPropertyChangedFor(nameof(TargetsDefaultRoute))]
+    [NotifyPropertyChangedFor(nameof(DefaultRouteWarning))]
     public partial EngineSource Source { get; set; }
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
     [NotifyPropertyChangedFor(nameof(LinkSpeedIsChosen))]
+    [NotifyPropertyChangedFor(nameof(DefaultRouteWarning))]
+    [NotifyPropertyChangedFor(nameof(TargetsDefaultRoute))]
     public partial AdapterOption? TransmitAdapter { get; set; }
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
+    [NotifyPropertyChangedFor(nameof(DefaultRouteWarning))]
+    [NotifyPropertyChangedFor(nameof(TargetsDefaultRoute))]
     public partial AdapterOption? ReceiveAdapter { get; set; }
+
+    /// <summary>
+    /// Set by the user to acknowledge that a selected adapter carries the machine's default route.
+    /// </summary>
+    /// <remarks>
+    /// Cleared whenever the selection changes, so an acknowledgement never carries over to an
+    /// adapter it was not given for.
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(StartCommand))]
+    public partial bool DefaultRouteAcknowledged { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TxDisplay))]
@@ -176,6 +195,52 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     public partial string? ErrorMessage { get; set; }
 
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
+
+    /// <summary>
+    /// True when either end of the run is the adapter carrying this machine's default route.
+    /// </summary>
+    /// <remarks>
+    /// Hardware only - a simulated run puts nothing on any wire.
+    /// </remarks>
+    public bool TargetsDefaultRoute =>
+        Source == EngineSource.Hardware
+        && ((TransmitAdapter?.CarriesDefaultRoute ?? false)
+            || (ReceiveAdapter?.CarriesDefaultRoute ?? false));
+
+    /// <summary>
+    /// The hazard text for a default-route target, or null when none is selected.
+    /// </summary>
+    /// <remarks>
+    /// Worded to match <see cref="RunSafety"/>'s DefaultRoute warning, which the Rig page shows,
+    /// so the two pages describe the same hazard the same way. It is not produced by it: RunSafety
+    /// takes <see cref="NetworkAdapterInfo"/> and this view model keeps only the projected
+    /// AdapterOption, so routing Lab Mode through it means carrying the full adapter here - worth
+    /// doing when the orchestrator needs the other hazards too, and not before. Lab Mode consulted
+    /// neither: it discarded
+    /// <c>CarriesDefaultRoute</c> when projecting adapters and had no confirmation step at all, so
+    /// a first visit - which auto-selects the first two adapters - could put near-line-rate raw
+    /// traffic on the NIC carrying the user's network, and their remote session with it, without
+    /// anything having been said. The disruption policy allows testing that adapter; it requires
+    /// the warning to be loud first.
+    /// </remarks>
+    public string? DefaultRouteWarning
+    {
+        get
+        {
+            if (!TargetsDefaultRoute)
+            {
+                return null;
+            }
+
+            var name = (TransmitAdapter?.CarriesDefaultRoute ?? false)
+                ? TransmitAdapter!.Label
+                : ReceiveAdapter!.Label;
+
+            return $"{name} carries this machine's default route. Running traffic across it will "
+                + "interrupt internet access, remote sessions, and network drives for the duration "
+                + "of the run.";
+        }
+    }
 
     public ObservableCollection<AdapterOption> Adapters { get; } = [];
 
@@ -337,7 +402,8 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
                     Adapters.Add(new AdapterOption(
                         adapter.Id,
                         $"{AdapterNickname.From(adapter.Description, adapter.Name)} — {DescribeLink(adapter)}",
-                        adapter.NegotiatedSpeed)
+                        adapter.NegotiatedSpeed,
+                        adapter.CarriesDefaultRoute)
                     {
                         Mac = mac.GetAddressBytes(),
                     });
@@ -527,12 +593,16 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     partial void OnTransmitAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
     {
+        DefaultRouteAcknowledged = false;
         AdoptNegotiatedLinkSpeed();
         SwapIfBothEndsAreTheSame(oldValue, newValue, receiveChanged: false);
     }
 
-    partial void OnReceiveAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue) =>
+    partial void OnReceiveAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
+    {
+        DefaultRouteAcknowledged = false;
         SwapIfBothEndsAreTheSame(oldValue, newValue, receiveChanged: true);
+    }
 
     /// <summary>
     /// Moves the displaced adapter to the other end rather than leaving both ends the same.
@@ -654,6 +724,9 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     private bool CanStart() =>
         !IsRunning &&
+        // The acknowledgement gates the button rather than producing an error after the fact,
+        // because by the time a run has started the disruption has already happened.
+        (!TargetsDefaultRoute || DefaultRouteAcknowledged) &&
         (Source == EngineSource.Simulated ||
          (TransmitAdapter is not null && ReceiveAdapter is not null &&
           TransmitAdapter.Id != ReceiveAdapter.Id));

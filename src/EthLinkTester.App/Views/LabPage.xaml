@@ -39,12 +39,35 @@
                           Title="Simulated data"
                           Message="No hardware is being measured. These readings are synthesised to exercise the UI. Choose Hardware as the source to run real frames across the cable." />
 
-            <muxc:InfoBar Grid.Row="1"
-                          IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+            <StackPanel Grid.Row="1" Spacing="8">
+            <muxc:InfoBar IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
                           IsClosable="False"
                           Severity="Error"
                           Title="Run stopped"
                           Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" />
+
+            <!--
+              The default-route hazard. The disruption policy allows testing the adapter carrying
+              this machine's network - that is deliberate, because it is often the one worth
+              testing - on condition the warning is loud and the confirmation explicit. Lab Mode
+              had neither, and its first visit auto-selects the first two adapters, so raw traffic
+              could start on the NIC holding the user's remote session with nothing said.
+
+              Not closable, and Start stays disabled until the checkbox is ticked. The
+              acknowledgement clears whenever either selection changes, so it never carries over to
+              an adapter it was not given for.
+            -->
+            <muxc:InfoBar IsOpen="{x:Bind ViewModel.TargetsDefaultRoute, Mode=OneWay}"
+                          IsClosable="False"
+                          Severity="Warning"
+                          Title="This will interrupt your network"
+                          Message="{x:Bind ViewModel.DefaultRouteWarning, Mode=OneWay}">
+                <muxc:InfoBar.ActionButton>
+                    <CheckBox Content="I understand - allow the run"
+                              IsChecked="{x:Bind ViewModel.DefaultRouteAcknowledged, Mode=TwoWay}" />
+                </muxc:InfoBar.ActionButton>
+            </muxc:InfoBar>
+            </StackPanel>
 
             <!--
               Only one of the two mode-specific controls is ever visible - adapter pickers for a

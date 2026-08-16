@@ -73,6 +73,24 @@ pub fn stamp(frame: &mut [u8], seq: u32, sent_nanos: u64) {
 /// Both the ethertype and the run id are also matched in the kernel, so this is a second check
 /// rather than the only one - cheap insurance against another application choosing the same
 /// experimental ethertype, and against a stale frame from a previous run still in a buffer.
+/// BPF filter selecting one run's frames and nothing else.
+///
+/// Kernel-side filtering is what makes a capture count trustworthy: the statistics then describe
+/// this run's frames rather than everything on the wire, or another run's. `parse` checks the run
+/// id again on the way past, but only for what the kernel already let through - a filter that
+/// omitted the id would hand the reader another run's frames to reject one at a time, at rate.
+///
+/// One definition, because two places need it and they must agree. They did not: the engine
+/// filtered on the run id and `wirecheck` did not, so `wirecheck` saw every probe on the wire.
+pub fn filter(run_id: u16) -> String {
+    format!(
+        "ether proto 0x{:04X} and ether[{}:2] = {}",
+        crate::PROBE_ETHERTYPE,
+        RUN_ID_OFFSET,
+        run_id
+    )
+}
+
 pub fn parse(data: &[u8], run_id: u16) -> Option<(u32, u64)> {
     if data.len() < HEADER_LEN
         || &data[MAGIC] != PROBE_MAGIC

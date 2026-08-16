@@ -189,6 +189,40 @@ public class SimulatedPacketEngineTests
         Assert.Equal(0, samples[^1].RxCaptureDrops);
     }
 
+    /// <summary>
+    /// Received never exceeds transmitted, on any profile.
+    /// </summary>
+    /// <remarks>
+    /// Loss is documented as transmitted minus received, so this is what stops that arithmetic
+    /// going negative and reporting better than 100% delivery. It did: receives used to be
+    /// accumulated from an independently jittered receive rate, which drifted above transmits by
+    /// far more than the errors being modelled - worst on the Failing profile, where the number
+    /// matters most. Unseeded on purpose, because the jitter is where the defect lived and a fixed
+    /// seed only ever exercises one path through it.
+    /// </remarks>
+    [Theory]
+    [InlineData(SimulationProfile.Healthy)]
+    [InlineData(SimulationProfile.Marginal)]
+    [InlineData(SimulationProfile.Failing)]
+    public async Task ReceivedNeverExceedsTransmitted(SimulationProfile profile)
+    {
+        var clock = new TestClock();
+        var engine = new SimulatedPacketEngine(profile, clock);
+        await engine.StartAsync(GigabitRun());
+
+        for (var second = 0; second < 20; second++)
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            foreach (var sample in Collect(engine))
+            {
+                Assert.True(
+                    sample.RxFrames <= sample.TxFrames,
+                    $"{profile}: received {sample.RxFrames} of {sample.TxFrames} sent, which is "
+                    + "negative loss");
+            }
+        }
+    }
+
     [Fact]
     public async Task FailingProfileLosesFrames()
     {

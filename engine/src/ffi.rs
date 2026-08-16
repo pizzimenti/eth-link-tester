@@ -196,6 +196,39 @@ pub unsafe extern "C" fn elt_engine_drain(
     result.unwrap_or(ELT_ERR_PANIC)
 }
 
+/// Stops sending while receive and the sampler keep running, so delivery can be counted honestly.
+///
+/// The host must call this, wait for the wire and the sampler to settle, drain once more, and only
+/// then call [`elt_engine_stop`]. Counting the moment transmit ends is always short and always in
+/// the same direction: the driver's send queue still holds frames already counted as sent, and the
+/// receive thread folds its kernel counts into the shared totals once per sample. On the reference
+/// rig that gap was 0.3% at 1518 bytes - the same size as the loss it was being read as, and the
+/// reason a healthy cable reported 99.7% delivered instead of 100.00%.
+///
+/// Safe to call more than once, and safe on a handle that is already stopped, which answers
+/// `ELT_ERR_NOT_RUNNING`.
+///
+/// # Safety
+/// `handle` must come from `elt_engine_start`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn elt_engine_stop_transmit(handle: *mut EngineHandle) -> i32 {
+    if handle.is_null() {
+        return ELT_ERR_NULL_ARGUMENT;
+    }
+
+    // Sound because the allocation is never freed - see EngineHandle.
+    let engine_handle = unsafe { &*handle };
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        engine_handle.with_engine(|engine| {
+            engine.stop_transmit();
+            ELT_OK
+        })
+    }));
+
+    result.unwrap_or(ELT_ERR_PANIC)
+}
+
 /// Stops the engine. Safe to call more than once, and safe to call while a drain is in flight.
 ///
 /// The handle's allocation deliberately outlives this - see [`EngineHandle`] - so a host that

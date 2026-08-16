@@ -19,9 +19,21 @@ use ethlink_engine::{frame, PROBE_ETHERTYPE};
 /// Minimum Ethernet frame, less the FCS the NIC appends.
 const FRAME_LEN: usize = frame::MIN_BUFFER;
 
-/// Fixed, because this tool sends one burst and exits - there is nothing for a run id to
-/// disambiguate, and a constant keeps the printed filter reproducible.
-const RUN_ID: u16 = 1;
+/// Distinct per invocation, from the process id.
+///
+/// This was a constant, on the reasoning that one burst that exits has nothing to disambiguate.
+/// That is wrong in the one direction that matters. Two overlapping runs sent the same id over the
+/// same `0..count` sequence range, so each receiver's filter accepted the other's frames and they
+/// filled in exactly the slots a lost frame would have left empty - a genuine loss reported as
+/// complete delivery, by the tool whose whole job is to be trusted about delivery. The hardware
+/// counter checks in Verify-Wire.ps1 do not catch it either, because they assert *at least* Count
+/// and both runs' frames are on the wire.
+///
+/// The printed filter is no longer constant between invocations, which is the price. The filter is
+/// printed with the id in it, so it stays reproducible for the run it describes.
+fn run_id() -> u16 {
+    std::process::id() as u16
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -48,8 +60,9 @@ fn main() {
         .timeout(200)
         .open()
         .expect("activate rx");
-    rx.filter(&format!("ether proto 0x{PROBE_ETHERTYPE:04X}"), true)
-        .expect("set filter");
+    let run_id = run_id();
+    rx.filter(&frame::filter(run_id), true).expect("set filter");
+    println!("  filter {}", frame::filter(run_id));
 
     let mut tx = pcap::Capture::from_device(tx_name.as_str())
         .expect("open tx")
@@ -57,7 +70,7 @@ fn main() {
         .expect("activate tx");
 
     println!("\nsending {count} frames, ethertype 0x{PROBE_ETHERTYPE:04X}, {FRAME_LEN} bytes each");
-    let mut buffer = frame::build(rx_mac, tx_mac, FRAME_LEN, RUN_ID);
+    let mut buffer = frame::build(rx_mac, tx_mac, FRAME_LEN, run_id);
     let started = Instant::now();
     for seq in 0..count {
         frame::stamp(&mut buffer, seq, 0);
@@ -70,8 +83,8 @@ fn main() {
     // Sequence numbers are tracked rather than counted, because a count cannot tell "every frame
     // arrived" from "one arrived twice and another never did". Both reach `count`, and the second
     // is a loss this tool would have reported as a perfect result. That is not hypothetical here:
-    // RUN_ID is a constant, so two overlapping wirecheck runs read each other's frames as their
-    // own, and the tool's whole purpose is to be trusted about exactly this.
+    // Overlapping runs used to read each other's frames as their own, filling exactly the slots
+    // a lost frame would leave empty; run ids are per-invocation now and the filter carries one.
     let mut seen = vec![false; count as usize];
     let mut unique = 0u32;
     let mut duplicates = 0u32;
@@ -81,7 +94,7 @@ fn main() {
     while Instant::now() < deadline && unique < count {
         match rx.next_packet() {
             Ok(packet) => {
-                if let Some((seq, _sent)) = frame::parse(packet.data, RUN_ID) {
+                if let Some((seq, _sent)) = frame::parse(packet.data, run_id) {
                     first_seq.get_or_insert(seq);
 
                     match seen.get_mut(seq as usize) {

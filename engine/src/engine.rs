@@ -437,15 +437,7 @@ fn spawn_rx(
     latency: Arc<Mutex<LatencyHistogram>>,
     epoch: Instant,
 ) -> Result<JoinHandle<()>, StartError> {
-    // Filtering in the kernel is what makes the count trustworthy: the capture statistics then
-    // describe this run's frames rather than everything on the wire, or another engine's.
-    let filter = format!(
-        "ether proto 0x{:04X} and ether[{}:2] = {}",
-        crate::PROBE_ETHERTYPE,
-        frame::RUN_ID_OFFSET,
-        run_id
-    );
-    capture.filter(&filter, true)?;
+    capture.filter(&frame::filter(run_id), true)?;
 
     Ok(std::thread::spawn(move || {
         guard(&counters, || {
