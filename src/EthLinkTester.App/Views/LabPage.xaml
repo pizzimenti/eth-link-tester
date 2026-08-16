@@ -48,10 +48,27 @@
 
             <!--
               Only one of the two mode-specific controls is ever visible - adapter pickers for a
-              hardware run, the behaviour profile for a simulated one - which is what keeps this
-              row inside a reasonable window width now that it carries the rig selection.
+              hardware run, the behaviour profile for a simulated one - which keeps this row
+              narrower than it looks now that it carries the rig selection.
+
+              It still does not always fit. On a 1366-pixel display the initial window leaves about
+              1092 pixels, and the navigation pane and margins take enough of that for the hardware
+              row - source, two adapter pickers, frame size, link speed, Start and Stop - to run
+              past the edge. The outer ScrollViewer scrolls only vertically, so the overflow was
+              not merely ugly: Start and Stop were unreachable until the window was resized, and
+              the developer machine is wide enough never to show it.
+
+              This row gets its own horizontal scroll rather than a wrapping panel. Wrapping would
+              want a WrapPanel, which is a new package for one layout, and reflowing an instrument
+              row moves the controls around as the mode changes. Scrolling keeps the order fixed
+              and keeps everything reachable.
             -->
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+            <ScrollViewer Grid.Row="2"
+                          HorizontalScrollMode="Auto"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollMode="Disabled"
+                          VerticalScrollBarVisibility="Disabled">
+            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
                 <StackPanel Spacing="4">
                     <TextBlock Text="Source" Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -130,6 +147,7 @@
                     <Button Content="Stop" Command="{x:Bind ViewModel.StopCommand}" />
                 </StackPanel>
             </StackPanel>
+            </ScrollViewer>
 
             <!--
               Current-value readouts. These answer "what is it right now", which a line chart

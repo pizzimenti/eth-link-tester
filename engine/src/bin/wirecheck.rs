@@ -66,15 +66,34 @@ fn main() {
     let send_elapsed = started.elapsed();
 
     // Drain what arrived, bounded so a total failure does not hang.
-    let mut received = 0u32;
+    //
+    // Sequence numbers are tracked rather than counted, because a count cannot tell "every frame
+    // arrived" from "one arrived twice and another never did". Both reach `count`, and the second
+    // is a loss this tool would have reported as a perfect result. That is not hypothetical here:
+    // RUN_ID is a constant, so two overlapping wirecheck runs read each other's frames as their
+    // own, and the tool's whole purpose is to be trusted about exactly this.
+    let mut seen = vec![false; count as usize];
+    let mut unique = 0u32;
+    let mut duplicates = 0u32;
+    let mut out_of_range = 0u32;
     let mut first_seq = None;
     let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline && received < count {
+    while Instant::now() < deadline && unique < count {
         match rx.next_packet() {
             Ok(packet) => {
                 if let Some((seq, _sent)) = frame::parse(packet.data, RUN_ID) {
                     first_seq.get_or_insert(seq);
-                    received += 1;
+
+                    match seen.get_mut(seq as usize) {
+                        // A sequence this run never sent. Another run's frame, or a corrupted one
+                        // that still parsed - either way it must not count towards delivery.
+                        None => out_of_range += 1,
+                        Some(true) => duplicates += 1,
+                        Some(slot) => {
+                            *slot = true;
+                            unique += 1;
+                        }
+                    }
                 }
             }
             Err(pcap::Error::TimeoutExpired) => continue,
@@ -89,19 +108,23 @@ fn main() {
         "\nsent     : {count} in {:.1} ms",
         send_elapsed.as_secs_f64() * 1000.0
     );
-    println!("received : {received} of {count}");
+    println!("received : {unique} of {count} distinct sequences");
     println!("first seq: {first_seq:?}");
+    if duplicates > 0 || out_of_range > 0 {
+        println!("duplicates: {duplicates}   out of range: {out_of_range}");
+    }
 
-    // Every frame, not merely some. The old threshold was `received > 0`, which passes while 999
-    // of 1000 are lost - and the number this tool exists to support is 1000 for 1000.
-    let all_arrived = received == count;
+    // Every frame, not merely some, and each exactly once. The original threshold was
+    // `received > 0`, which passes while 999 of 1000 are lost - and the number this tool exists to
+    // support is 1000 for 1000.
+    let all_arrived = unique == count;
 
     println!(
         "\nVERDICT  : {}",
-        match (all_arrived, received) {
+        match (all_arrived, unique) {
             (true, _) => "EVERY FRAME ARRIVED".to_owned(),
             (false, 0) => "NOTHING ARRIVED - premise not proven".to_owned(),
-            (false, _) => format!("FAILED - only {received} of {count} arrived"),
+            (false, _) => format!("FAILED - only {unique} of {count} distinct frames arrived"),
         }
     );
 

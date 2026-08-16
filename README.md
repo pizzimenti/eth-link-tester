@@ -118,6 +118,12 @@ land in a half-second window — so "p99" is the largest of twenty samples weari
 name. The sampling starves exactly at the stress case it exists to characterise. At 1518 bytes
 roughly 112 probes per window land and the figure is real.
 
+**The strip charts draw straight through a telemetry gap.** When the host falls behind and the
+ring overwrites samples it never read, the count is shown as a stat tile but the plotted line joins
+across the hole as though the run had been continuous. Honest time there needs a timestamped
+x-axis rather than the fixed-interval buffer the charts use now; Phase 8 owns Lab Mode's charts and
+owns this.
+
 **Throughput at 1518 bytes is understated by roughly 3.5%**, because the latency probe is sent
 separately from the bulk traffic and leaves a bubble in the driver's pipeline. That figure was
 measured at 1518 bytes only and does not transfer to other frame sizes. RFC 2544 measures

@@ -109,6 +109,24 @@ public sealed partial class LabPage : Page, IDisposable
             return;
         }
 
+        // KNOWN LIMITATION - the charts draw straight through a telemetry gap.
+        //
+        // When the ring overwrites samples the host never read, those samples are counted (the
+        // "Telemetry gaps" tile) but not represented here: the next sample is appended right
+        // beside the last one, so a seventeen-second hole is drawn as one sample interval and the
+        // line joins across it as though the run had been continuous. That is the same misleading
+        // continuity the dropped-sample contract exists to expose, surviving in the one place a
+        // user actually looks.
+        //
+        // Not fixed here on purpose. StripChart plots a ScottPlot DataStreamer, which is a
+        // fixed-capacity buffer at a fixed sample interval and carries no per-sample timestamp -
+        // the compression is inherent to that choice, so honest time needs a timestamped x-axis
+        // and a different plot type. The cheap half, appending NaN to break the line, risks
+        // DataStreamer deriving NaN axis limits and blanking the chart, and a WinUI 3 window
+        // cannot be screenshotted here to check (it captures black under both GDI CopyFromScreen
+        // and PrintWindow with PW_RENDERFULLCONTENT), so it would ship unverified.
+        //
+        // Phase 8 owns Lab Mode's charts. This belongs there, with a rig in front of it.
         foreach (ref readonly var sample in samples)
         {
             _throughputChart.Append(sample.TxMegabitsPerSecond, sample.RxMegabitsPerSecond);
