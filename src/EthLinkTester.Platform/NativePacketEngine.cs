@@ -233,9 +233,16 @@ public sealed class NativePacketEngine : IPacketEngine
         // The host keeps draining across this window, so the final samples carry the settled
         // totals. Without it, this engine had the artefact that `enginerun` was fixed for - the
         // number in the app and the number in the tool disagreed about the same cable.
-        if (_handle != IntPtr.Zero)
+        // Claimed once, here, and used for both calls below. Reading _handle for the
+        // transmit-stop and claiming it again for the teardown left a window in which the
+        // finalizer could claim and stop the same handle in between - so the transmit-stop ran
+        // against a handle another thread had already retired. The comment below says this side
+        // must not depend on the native tombstone to stay safe, and that call was depending on it.
+        var claimed = Interlocked.Exchange(ref _handle, IntPtr.Zero);
+
+        if (claimed != IntPtr.Zero)
         {
-            _ = elt_engine_stop_transmit(_handle);
+            _ = elt_engine_stop_transmit(claimed);
 
             try
             {
@@ -256,8 +263,6 @@ public sealed class NativePacketEngine : IPacketEngine
         // today only because the native side keeps a tombstone and answers the second call with
         // ELT_ERR_NOT_RUNNING; this side should not be relying on a property of the other side of
         // the ABI to avoid a double free.
-        var claimed = Interlocked.Exchange(ref _handle, IntPtr.Zero);
-
         if (claimed != IntPtr.Zero)
         {
             // A non-zero code here means the engine could not shut down cleanly. The run is over

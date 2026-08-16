@@ -617,15 +617,39 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
     partial void OnTransmitAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
     {
-        DefaultRouteAcknowledged = false;
+        ClearAcknowledgementIfAdapterChanged(oldValue, newValue);
         AdoptNegotiatedLinkSpeed();
         SwapIfBothEndsAreTheSame(oldValue, newValue, receiveChanged: false);
     }
 
     partial void OnReceiveAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
     {
-        DefaultRouteAcknowledged = false;
+        ClearAcknowledgementIfAdapterChanged(oldValue, newValue);
         SwapIfBothEndsAreTheSame(oldValue, newValue, receiveChanged: true);
+    }
+
+    /// <summary>
+    /// Drops a default-route acknowledgement when the selection moves to a different adapter.
+    /// </summary>
+    /// <remarks>
+    /// Compared by id, not by object. Clearing on every assignment made the confirmation
+    /// impossible to satisfy rather than merely strict: Start refreshes the adapter list first, the
+    /// refresh assigns the selections, assignment raises these handlers, and the acknowledgement
+    /// the user had just given was gone before the gate read it. Ticking the box and pressing
+    /// Start again repeated the cycle, so a default-route run could never begin at all - a safety
+    /// gate that had stopped being a gate and become a wall.
+    /// <para>
+    /// The acknowledgement is about an adapter, so the identity of the adapter is what it should
+    /// follow. A refreshed option describing the same NIC is the same consent; a different NIC is
+    /// not, and still clears.
+    /// </para>
+    /// </remarks>
+    private void ClearAcknowledgementIfAdapterChanged(AdapterOption? oldValue, AdapterOption? newValue)
+    {
+        if (oldValue?.Id != newValue?.Id)
+        {
+            DefaultRouteAcknowledged = false;
+        }
     }
 
     /// <summary>

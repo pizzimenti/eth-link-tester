@@ -31,6 +31,14 @@ const FRAME_LEN: usize = frame::MIN_BUFFER;
 ///
 /// The printed filter is no longer constant between invocations, which is the price. The filter is
 /// printed with the id in it, so it stays reproducible for the run it describes.
+///
+/// The cast truncates: a process id is wider than the 16 bits the frame carries, so two concurrent
+/// runs whose ids share their low 16 bits still collide - about one pair in 65,536, against every
+/// pair before this. Not widened here, because the run id is a wire-format field the engine uses
+/// too (`next_run_id` is also `u16`), so a wider one means changing the frame layout, the BPF
+/// filter, the parser and both sides' tests together. That is a Phase 5 decision, to be taken when
+/// the orchestrator actually runs engines concurrently and the field has to carry more than one
+/// diagnostic's worth of identity.
 fn run_id() -> u16 {
     std::process::id() as u16
 }

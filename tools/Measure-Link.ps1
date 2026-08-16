@@ -76,10 +76,22 @@ Write-Host ''
 $beforeTx = Get-AdapterSnapshot $tx.Name
 $beforeRx = Get-AdapterSnapshot $rx.Name
 
-$output = & $enginerun `
-    $tx.InterfaceGuid $rx.InterfaceGuid $tx.MacAddress $rx.MacAddress `
-    $bufferBytes $Seconds $LinkMegabits 2>&1
-$engineExit = $LASTEXITCODE
+# ErrorActionPreference is relaxed across this call and nowhere else. With it at 'Stop', 2>&1 on a
+# native command turns each stderr line into a terminating ErrorRecord, so the script would abort
+# on the first line enginerun writes to stderr - which is precisely the line it writes to announce
+# a fault. The exit-code check below would never run, and the failure would surface as a
+# PowerShell error rather than as the diagnosis the tool exists to give.
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $output = & $enginerun `
+        $tx.InterfaceGuid $rx.InterfaceGuid $tx.MacAddress $rx.MacAddress `
+        $bufferBytes $Seconds $LinkMegabits 2>&1
+    $engineExit = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorAction
+}
 
 Wait-CounterSettle
 

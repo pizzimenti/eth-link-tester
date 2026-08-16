@@ -104,8 +104,11 @@ fn main() {
         }
     }
 
-    let fault = engine.fault();
+    // Stopped first, then asked. Reading the fault before the join missed any fault a worker
+    // recorded while it was shutting down - a receive thread dying, or a panic caught on the way
+    // out - and this binary then exited 0 and had the run published as a valid measurement.
     engine.stop();
+    let fault = engine.fault();
 
     let delivered = if last.tx_frames > 0 {
         100.0 * last.rx_frames as f64 / last.tx_frames as f64

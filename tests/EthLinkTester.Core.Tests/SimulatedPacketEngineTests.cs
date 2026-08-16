@@ -178,14 +178,11 @@ public class SimulatedPacketEngineTests
 
         Assert.NotEmpty(samples);
 
-        // Close to transmit rather than equal to it. Receive is jittered independently of
-        // transmit, so the two differ by a percent or so in either direction on a perfect link -
-        // which is true of the real rig as well, where a window boundary falls between the two
-        // counters. What a healthy profile must not show is a systematic deficit.
-        Assert.InRange(
-            samples[^1].RxFrames,
-            (long)(samples[^1].TxFrames * 0.9),
-            long.MaxValue);
+        // Exactly equal. Receives are derived from transmits minus modelled loss, and the Healthy
+        // profile models none - so anything other than equality is a defect, and the 10% band this
+        // assertion used to allow would have passed one. The band was left over from when receives
+        // were accumulated from an independently jittered rate.
+        Assert.Equal(samples[^1].TxFrames, samples[^1].RxFrames);
         Assert.Equal(0, samples[^1].RxCaptureDrops);
     }
 
