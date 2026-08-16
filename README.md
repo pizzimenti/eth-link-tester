@@ -60,8 +60,8 @@ and a Realtek USB GbE adapter joined by one cable:
 | | Result |
 |---|---|
 | Frames crossing the wire | 1000 sent, 1000 received, **0** back on the sender, **0** errors — measured by `Verify-Wire.ps1` from both NICs' hardware counters¹ |
-| 1518-byte frames | 667,080 frames: driver-accepted, hardware-sent, hardware-received and engine-received **all identical**. 100.00% delivered, 0 discards, 0 errors |
-| 1518-byte throughput / latency | ~820 Mbps sustained, p50 ~550 µs, p99 1.6–5.3 ms |
+| 1518-byte frames | 578,136 frames: driver-accepted, hardware-sent, hardware-received and engine-received **all identical**. 100.00% delivered, 0 discards, 0 errors |
+| 1518-byte throughput / latency | ~890 Mbps sustained, p50 ~490 µs, p99 ~800 µs on an idle host² |
 | 64-byte frames, Realtek → Killer | 2,105,280 frames, again identical four ways. 100.00% delivered, 210k frames/s |
 | 64-byte frames, Killer → Realtek | **Not reproducible** — see below |
 | A link dropped mid-run | Reported as a fault within half a second, naming the cause, and the run torn down |
@@ -71,6 +71,14 @@ than them: it requires *at least* `Count` frames sent and received, and tolerate
 `-NoiseAllowance` (default 20) frames in the reverse direction, because Windows emits ARP, LLMNR
 and mDNS on any adapter it considers up and a hard zero would fail on a healthy rig for reasons
 that have nothing to do with the cable. Receive errors must be exactly zero.
+
+² **What else the host is doing changes these numbers, and p99 most of all.** Measured on a busy
+machine — a couple of compiles and a second agent session — the same cable and the same build gave
+~840 Mbps with p50 ~550 µs and p99 between 1.6 and 5.3 ms, against ~890 / ~490 µs / ~800 µs idle.
+The p50 barely moves and the p99 moves by a factor of five, which is what you would expect of a
+figure whose tail is host scheduling rather than the link. Delivery is unaffected: both conditions
+counted every frame. Quote a p99 from this rig only alongside what the machine was doing, and treat
+a tail that changes without the cable changing as evidence about the fixture.
 
 The agreement in rows 2 and 4 is the strongest result here. The engine counts its own frames in
 software and the NICs count theirs in hardware, and at 1518 bytes the two agree *exactly* — which
@@ -101,7 +109,8 @@ send buffer on the way out *and* the whole receive-side software path on the way
 aggregation, the NPF kernel buffer, and the capture thread's own scheduling — because the receive
 timestamp is taken when userspace dequeues the frame, not when it arrived. Closing that needs NIC
 hardware timestamping, which neither adapter here provides. The p99 in particular is dominated by
-host scheduling and moves run to run; the p50 is stable.
+host scheduling — see note 2 for how far it moves when the machine is busy — while the p50 barely
+shifts.
 
 **At 64 bytes the p99 is a window maximum, not a percentile.** One frame per batch carries a
 timestamp, and at minimum frame size a batch is large enough that only about twenty timed frames

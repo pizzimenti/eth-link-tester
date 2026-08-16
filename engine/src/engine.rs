@@ -193,6 +193,13 @@ pub enum EngineFault {
 /// overshoot a dropped link produces and far above any sampling skew.
 const LINE_RATE_TOLERANCE: f64 = 1.10;
 
+/// Published for a window in which no timed probe arrived.
+///
+/// Zero rather than a sentinel because zero already means "nothing measured yet" here - it is what
+/// the first samples of every run carry, before a window has closed - so the host and the charts
+/// need no new case. A latency of exactly zero is not a reading anything can produce.
+const NO_LATENCY: (f64, f64) = (0.0, 0.0);
+
 #[derive(Default)]
 struct Counters {
     tx_frames: AtomicU64,
@@ -614,7 +621,7 @@ fn spawn_sampler(
 
             // Percentiles from the window that has closed, held steady until the next one does.
             let mut latency_window = 0usize;
-            let mut published = (0.0, 0.0);
+            let mut published = NO_LATENCY;
 
             while running.load(Ordering::Acquire) {
                 std::thread::sleep(SAMPLE_INTERVAL);
@@ -643,9 +650,19 @@ fn spawn_sampler(
                 if latency_window >= RATE_WINDOW_SAMPLES {
                     latency_window = 0;
                     if let Ok(mut histogram) = latency.lock() {
-                        if histogram.count() > 0 {
-                            published = (histogram.percentile(0.50), histogram.percentile(0.99));
-                        }
+                        // An empty window publishes nothing, rather than the window before it.
+                        // Keeping the old pair meant a run that stopped producing timed probes
+                        // went on reporting a plausible latency indefinitely - a figure nothing
+                        // measured, carried forward at 60 Hz and indistinguishable from a live
+                        // one. It is exactly reachable: one timed probe rides each batch, so at
+                        // minimum frame size only about twenty land in a window, and losing them
+                        // while bulk traffic still arrives is the case worth seeing rather than
+                        // the case worth hiding.
+                        published = if histogram.count() > 0 {
+                            (histogram.percentile(0.50), histogram.percentile(0.99))
+                        } else {
+                            NO_LATENCY
+                        };
                         histogram.reset();
                     }
                 }

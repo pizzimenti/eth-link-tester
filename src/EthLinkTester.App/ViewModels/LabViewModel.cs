@@ -100,8 +100,10 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
     [NotifyPropertyChangedFor(nameof(IsIdle))]
     // LinkSpeedIsChosen is now gated on IsIdle, and a computed property built on another computed
-    // property gets no notification of its own.
+    // property gets no notification of its own. IsSimulated switches authority between the engine
+    // and the picker on this same flag.
     [NotifyPropertyChangedFor(nameof(LinkSpeedIsChosen))]
+    [NotifyPropertyChangedFor(nameof(IsSimulated))]
     public partial bool IsRunning { get; set; }
 
     [ObservableProperty]
@@ -278,7 +280,20 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     /// True whenever the displayed numbers are synthesised. The UI must state this loudly:
     /// a plausible chart that never touched a cable is worse than no chart at all.
     /// </summary>
-    public bool IsSimulated => _engine?.IsSimulated ?? Source == EngineSource.Simulated;
+    /// <remarks>
+    /// The engine answers only while a run is going; otherwise the selected source does. Deferring
+    /// to <c>_engine</c> whenever one existed looked equivalent and was not: Stop leaves the
+    /// stopped engine in place, so after a hardware run the banner went on reporting that run's
+    /// mode. Switching to Simulated while idle left the warning hidden and switching back left it
+    /// showing, in both cases until the next Start replaced the engine - and the wrong half of
+    /// that is a simulated run presented as though it came off the wire.
+    /// <para>
+    /// While a run *is* going the engine is the authority, because what is producing the numbers
+    /// matters more than what the picker says.
+    /// </para>
+    /// </remarks>
+    public bool IsSimulated =>
+        IsRunning ? _engine?.IsSimulated ?? false : Source == EngineSource.Simulated;
 
     /// <summary>The engine the pump should poll, or null when idle.</summary>
     public IPacketEngine? Engine => _engine;
