@@ -147,7 +147,7 @@ public sealed record TopologyVerdict(
     /// signals are worth more than one - but it never lifts anything to High, which is reserved
     /// for a single signal whose alternative is physically impossible.
     /// </remarks>
-    private static TopologyConfidence ConfidenceFrom(IReadOnlyList<TopologyObservation> agreeing)
+    private static TopologyConfidence ConfidenceFrom(List<TopologyObservation> agreeing)
     {
         var strongest = agreeing.Min(o => o.Strength);
 
