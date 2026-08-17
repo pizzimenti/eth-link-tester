@@ -21,6 +21,16 @@ namespace EthLinkTester.Core.Topology;
 /// the matching case. Reading agreement as evidence of a direct link would be the single easiest
 /// way to produce the confident wrong answer this whole model is shaped to avoid.
 /// </para>
+/// <para>
+/// <b>The one soft spot in "impossible": the two speeds are not read at the same instant.</b> The
+/// physics is exact but the evidence for it is two CIM queries some milliseconds apart, and a link
+/// that retrains between them - a downshift under thermal stress, precisely the fault this tool
+/// exists to catch - fabricates a mismatch on a bare cable. It fails in the cheap direction, so it
+/// is not urgent, but "the alternative is physically impossible" is a claim about the link and not
+/// about the reading. The orchestrator should re-read and confirm before promoting this to
+/// Conclusive; a caller reading both ports twice costs one more query and turns a transient into
+/// something this signal can see rather than something it reports.
+/// </para>
 /// </remarks>
 public static class LinkSpeedSignal
 {

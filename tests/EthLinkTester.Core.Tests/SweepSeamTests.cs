@@ -98,7 +98,7 @@ public class SweepSeamTests
 
         Assert.Single(deciding);
         Assert.True(Enum.Parse<ProbeAddress>(deciding[0].Name).Decides());
-        Assert.Single(Enum.GetValues<ProbeAddress>().Where(a => a.Decides()));
+        Assert.Single(Enum.GetValues<ProbeAddress>(), a => a.Decides());
     }
 
     /// <summary>

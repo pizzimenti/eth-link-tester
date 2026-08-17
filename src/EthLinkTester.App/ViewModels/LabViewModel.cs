@@ -759,15 +759,39 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             ?? "The engine faulted and the run was stopped. The readings above are stale.";
     }
 
+    /// <summary>
+    /// Stops the run, guarded the same way <see cref="StartAsync"/> is.
+    /// </summary>
+    /// <remarks>
+    /// The asymmetry was the defect: start caught, stop did not, and both are
+    /// <c>AsyncRelayCommand</c> bodies whose faulted task escapes to the UI thread and terminates
+    /// the app with no message. Today's native engine reports through <c>Fault</c> rather than
+    /// throwing from <c>StopAsync</c>, so this was a latent hole rather than a live crash - which
+    /// is exactly the kind that gets opened by a change somewhere else entirely.
+    /// <para>
+    /// <c>IsRunning</c> is cleared either way. A stop that threw has still left the UI unable to
+    /// claim a run is in progress, and leaving the button in its running state would strand the
+    /// user with no way to try again.
+    /// </para>
+    /// </remarks>
     [RelayCommand(CanExecute = nameof(CanStop))]
     private async Task StopAsync()
     {
-        if (_engine is not null)
+        try
         {
-            await _engine.StopAsync();
+            if (_engine is not null)
+            {
+                await _engine.StopAsync();
+            }
         }
-
-        IsRunning = false;
+        catch (Exception ex)
+        {
+            ErrorMessage = $"The run did not stop cleanly: {ex.Message}";
+        }
+        finally
+        {
+            IsRunning = false;
+        }
     }
 
     private bool CanStart() =>

@@ -182,6 +182,59 @@ public class TopologyVerdictTests
         Assert.DoesNotContain(weak.Detail, verdict.Summary, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// "Declined" and "ran and proved nothing" survive as different facts through the combiner.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two of these signals are opt-in because they disrupt the link, so a report that cannot tell
+    /// a signal the user declined from one that ran and settled nothing is claiming coverage it
+    /// does not have - and RFC 2544 section 7 requires the configuration actually used, including
+    /// what was disabled, to be part of the reported result.
+    /// </para>
+    /// <para>
+    /// Pinned because <c>Ran</c> is an <c>init</c> property defaulting to true, so nothing forces
+    /// any producer to populate it and nothing would fail if the combiner dropped it. Both
+    /// observations here are Inconclusive and therefore travel the same path through
+    /// <see cref="TopologyVerdict.From"/>; only the flag separates them.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ASignalThatWasNeverRun_IsDistinguishableFromOneThatFoundNothing()
+    {
+        var verdict = TopologyVerdict.From(
+        [
+            TopologyObservation.NotRun(
+                TopologySignal.LinkStateCoupling, "the user declined the disruptive tests"),
+            TopologyObservation.Nothing(
+                TopologySignal.BridgeProtocolTraffic, "no LLDP, CDP or STP in 190 seconds"),
+        ]);
+
+        var declined = verdict.Observations.Single(o => o.Signal == TopologySignal.LinkStateCoupling);
+        var listened = verdict.Observations.Single(
+            o => o.Signal == TopologySignal.BridgeProtocolTraffic);
+
+        Assert.False(declined.Ran);
+        Assert.True(listened.Ran);
+        Assert.Equal(TopologyFinding.Inconclusive, declined.Finding);
+        Assert.Equal(TopologyFinding.Inconclusive, listened.Finding);
+    }
+
+    /// <summary>
+    /// A signal that was never run cannot lift a verdict, whatever strength it was constructed with.
+    /// </summary>
+    [Fact]
+    public void ASignalThatWasNeverRun_ContributesNothing()
+    {
+        var verdict = TopologyVerdict.From(
+        [
+            TopologyObservation.NotRun(TopologySignal.ForcedSpeedAsymmetry, "not offered on this rig"),
+        ]);
+
+        Assert.Equal(TopologyConclusion.Unknown, verdict.Conclusion);
+        Assert.False(verdict.GradingIsAttributable);
+    }
+
     /// <summary>An unestablished topology says so, rather than describing a link it did not find.</summary>
     [Fact]
     public void UnknownSummary_SaysResultsCannotBeAttributed()

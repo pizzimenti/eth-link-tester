@@ -427,14 +427,28 @@ fn next_run_id() -> u16 {
 }
 
 /// Bytes to allocate for the transmit batch: [`SEND_QUEUE_WIRE_TIME`] at the link's rate.
-fn send_queue_bytes(link_bits_per_second: u64) -> u32 {
+///
+/// **The queue's own accounting, not the wire's.** `SendQueue::new` takes a buffer that has to hold
+/// both the packet contents and a `pcap_pkthdr` per packet - sixteen bytes each, which the crate
+/// exposes as `packet_header_size()` precisely so a caller can size exactly. The old sizing spent
+/// the whole buffer as though it were frame bytes, and since the header is smaller than the 24
+/// bytes of wire overhead a frame occupies, the buffer held *more* wire time than it asked for: 4.0
+/// ms at 1514-byte frames and 4.4 ms at 60, where the two per-frame constants are furthest apart.
+/// Ten percent, in the direction that makes a stop slower to notice.
+///
+/// It went unnoticed because the test that should have caught it asserted the analytic formula
+/// against itself rather than against what the queue holds, so it certified a wire time the queue
+/// did not have.
+fn send_queue_bytes(link_bits_per_second: u64, frame_len: usize) -> u32 {
     let bits = if link_bits_per_second == 0 {
         DEFAULT_LINK_BITS_PER_SECOND
     } else {
         link_bits_per_second
     };
 
-    let bytes = (bits / 8) as f64 * SEND_QUEUE_WIRE_TIME.as_secs_f64();
+    let wire_bytes = (bits / 8) as f64 * SEND_QUEUE_WIRE_TIME.as_secs_f64();
+    let frames = wire_bytes / (frame_len + WIRE_OVERHEAD_BYTES) as f64;
+    let bytes = frames * (frame_len + pcap::packet_header_size()) as f64;
 
     // Floor: below about 64 KB the per-batch call starts to dominate at small frame sizes.
     // Ceiling: 8 MB is more than 10 Gbps needs and keeps a bad link-speed figure from asking for a
@@ -574,7 +588,7 @@ fn spawn_tx(
             let mut buffer = frame::build(config.rx_mac, config.tx_mac, config.frame_len, run_id);
             let wire_bytes = (buffer.len() + WIRE_OVERHEAD_BYTES) as u64;
 
-            let queue_bytes = send_queue_bytes(config.link_bits_per_second);
+            let queue_bytes = send_queue_bytes(config.link_bits_per_second, buffer.len());
             let mut queue = match SendQueue::new(queue_bytes) {
                 Ok(queue) => queue,
                 Err(_) => {
@@ -731,7 +745,7 @@ fn spawn_sampler(
                     latency_p99_microseconds: p99,
                     tx_frames: counters.tx_frames.load(Ordering::Relaxed) as i64,
                     rx_frames: rx_frames as i64,
-                    rx_errors: counters.rx_capture_drops.load(Ordering::Relaxed) as i64,
+                    rx_capture_drops: counters.rx_capture_drops.load(Ordering::Relaxed) as i64,
                 });
             }
         })
@@ -803,21 +817,34 @@ mod tests {
         ));
     }
 
-    /// The batch is sized in wire time so it scales with the link, and bounds how long a stop may
-    /// take to be noticed - a transmit already in flight cannot be interrupted.
-    fn drain_seconds(bits: u64) -> f64 {
-        send_queue_bytes(bits) as f64 * 8.0 / bits as f64
+    /// How long the batch this sizing produces actually takes to leave the wire.
+    ///
+    /// Through the queue's own accounting rather than the analytic formula the sizing uses: a
+    /// buffer of N bytes holds N / (frame + header) frames, and each of those occupies
+    /// frame + WIRE_OVERHEAD_BYTES of wire time. Asserting the formula against itself is what the
+    /// previous version of this test did, which is why it certified a wire time the queue did not
+    /// hold.
+    fn drain_seconds(bits: u64, frame_len: usize) -> f64 {
+        let capacity = send_queue_bytes(bits, frame_len) as f64;
+        let frames = capacity / (frame_len + pcap::packet_header_size()) as f64;
+
+        frames * (frame_len + WIRE_OVERHEAD_BYTES) as f64 * 8.0 / bits as f64
     }
 
     #[test]
     fn the_transmit_batch_holds_the_intended_wire_time() {
-        for bits in [1_000_000_000u64, 2_500_000_000, 5_000_000_000] {
-            let seconds = drain_seconds(bits);
+        // Both ends of the frame range, because the per-packet header is a fifth of a minimum
+        // frame and a rounding error on a maximum one - so a sizing that ignores it is wrong by
+        // ten percent at one end and invisible at the other.
+        for frame_len in [frame::MIN_BUFFER, frame::MAX_BUFFER] {
+            for bits in [1_000_000_000u64, 2_500_000_000, 5_000_000_000] {
+                let seconds = drain_seconds(bits, frame_len);
 
-            assert!(
-                (seconds - SEND_QUEUE_WIRE_TIME.as_secs_f64()).abs() < 0.000_5,
-                "{bits} bps drains its batch in {seconds}s"
-            );
+                assert!(
+                    (seconds - SEND_QUEUE_WIRE_TIME.as_secs_f64()).abs() < 0.000_5,
+                    "{bits} bps at {frame_len} bytes drains its batch in {seconds}s"
+                );
+            }
         }
     }
 
@@ -827,10 +854,10 @@ mod tests {
     /// frames, which is the direction that helps.
     #[test]
     fn the_clamps_keep_the_batch_within_safe_bounds() {
-        let slow = drain_seconds(10_000_000);
+        let slow = drain_seconds(10_000_000, frame::MAX_BUFFER);
         assert!(slow < 0.1, "10 Mbps: a stop would wait {slow}s");
 
-        let fast = drain_seconds(100_000_000_000);
+        let fast = drain_seconds(100_000_000_000, frame::MAX_BUFFER);
         assert!(fast < SEND_QUEUE_WIRE_TIME.as_secs_f64());
         assert!(fast > 0.000_5, "100 Gbps: {fast}s is too short to batch");
     }
@@ -838,8 +865,8 @@ mod tests {
     #[test]
     fn an_unknown_link_rate_falls_back_to_gigabit() {
         assert_eq!(
-            send_queue_bytes(0),
-            send_queue_bytes(DEFAULT_LINK_BITS_PER_SECOND)
+            send_queue_bytes(0, frame::MAX_BUFFER),
+            send_queue_bytes(DEFAULT_LINK_BITS_PER_SECOND, frame::MAX_BUFFER)
         );
     }
 

@@ -1,10 +1,19 @@
 //! The C ABI the managed host calls.
 //!
-//! Every entry point catches panics. Unwinding across an FFI boundary is undefined behaviour, and
-//! the usual remedy for a cdylib is `panic = "abort"` - which is wrong for this system. The host
-//! process holds the restore journal and is the only thing that knows how to put a forced adapter
-//! back, so aborting would turn a recoverable engine bug into a NIC stranded at whatever speed the
-//! run set it to. Catching converts the same bug into a failed run that the host can recover from.
+//! Every entry point catches panics, and the reason is the restore journal rather than soundness.
+//!
+//! A panic that escapes a non-unwinding ABI has been a guaranteed **abort** since Rust 1.81, not
+//! undefined behaviour, and this module used to say otherwise. The distinction matters in one
+//! direction only, and it is the dangerous one: "it would be UB" invites a maintainer to reach for
+//! the usual cdylib remedy of `panic = "abort"`, on the grounds that a defined abort is better than
+//! undefined behaviour. That is the single change this system cannot absorb. The host process holds
+//! the restore journal and is the only thing that knows how to put a forced adapter back, so
+//! aborting turns a recoverable engine bug into a NIC stranded at whatever speed the run set it to,
+//! on a machine whose network may be down because of it.
+//!
+//! So: escaping panics abort, and these wrappers exist to turn an abort into an error code the host
+//! can act on. That is also the Nomicon's blessed shape for an FFI boundary, unchanged by the 1.81
+//! clarification - only the justification for it moved.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU32, Ordering};
