@@ -155,14 +155,23 @@ mod tests {
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .collect();
 
-        assert_eq!(rows.len(), SWEEP.len(), "the fixture and the sweep differ in size");
+        assert_eq!(
+            rows.len(),
+            SWEEP.len(),
+            "the fixture and the sweep differ in size"
+        );
 
         for (row, probe) in rows.iter().zip(SWEEP.iter()) {
             let fields: Vec<&str> = row.split(',').collect();
             assert_eq!(fields.len(), 3, "malformed fixture row: {row}");
 
             assert_eq!(fields[0], probe.name, "name, or send order, differs");
-            assert_eq!(fields[1], format_mac(&probe.mac), "{} has a different address", probe.name);
+            assert_eq!(
+                fields[1],
+                format_mac(&probe.mac),
+                "{} has a different address",
+                probe.name
+            );
             assert_eq!(
                 fields[2] == "yes",
                 probe.discriminating,

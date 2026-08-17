@@ -31,9 +31,7 @@ fn main() {
         eprintln!(
             "  Both MACs are excluded from both captures. Npcap hands a handle the frames the"
         );
-        eprintln!(
-            "  host itself sent on that adapter, and Windows ships an LLDP agent enabled by"
-        );
+        eprintln!("  host itself sent on that adapter, and Windows ships an LLDP agent enabled by");
         eprintln!("  default, so without this the machine reads as a switch on its own segment.");
         std::process::exit(2);
     }

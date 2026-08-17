@@ -467,7 +467,11 @@ pub unsafe extern "C" fn elt_passive_listen(
             std::ptr::copy_nonoverlapping(mac_b, macs[1].as_mut_ptr(), 6);
         }
 
-        match crate::sweep::listen(&devices, &macs, std::time::Duration::from_secs(seconds.into())) {
+        match crate::sweep::listen(
+            &devices,
+            &macs,
+            std::time::Duration::from_secs(seconds.into()),
+        ) {
             Ok(heard) => {
                 let totals = [
                     heard.iter().map(|h| h.lldp).sum::<u32>(),

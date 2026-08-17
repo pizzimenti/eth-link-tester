@@ -330,7 +330,10 @@ mod tests {
         // LLDP, STP and CDP; not the tagged LLDP and not the IPv4 frame.
         assert_eq!(matches(&all(), &packets), 3);
         assert_eq!(matches(&all(), &[frames::ipv4(frames::OTHER_MAC)]), 0);
-        assert_eq!(matches(&all(), &[frames::tagged_lldp(frames::OTHER_MAC)]), 0);
+        assert_eq!(
+            matches(&all(), &[frames::tagged_lldp(frames::OTHER_MAC)]),
+            0
+        );
     }
 
     /// Building it from the constants did not change what it matches.
@@ -348,7 +351,11 @@ mod tests {
                                      and (ether[14:2] = 0x4242 or (ether[14:2] = 0xaaaa \
                                      and ether[16:4] = 0x0300000c and ether[20:2] = 0x2000)))";
 
-        let packets = [one_of_each(frames::SELF_MAC), one_of_each(frames::OTHER_MAC)].concat();
+        let packets = [
+            one_of_each(frames::SELF_MAC),
+            one_of_each(frames::OTHER_MAC),
+        ]
+        .concat();
 
         assert_eq!(matches(&all(), &packets), matches(HAND_FACTORED, &packets));
     }
@@ -364,13 +371,24 @@ mod tests {
             return;
         }
 
-        let packets = [one_of_each(frames::SELF_MAC), one_of_each(frames::OTHER_MAC)].concat();
+        let packets = [
+            one_of_each(frames::SELF_MAC),
+            one_of_each(frames::OTHER_MAC),
+        ]
+        .concat();
         let filter = all_excluding_self(&[frames::SELF_MAC]);
 
-        assert_eq!(matches(&all(), &packets), 6, "three protocols from each host");
+        assert_eq!(
+            matches(&all(), &packets),
+            6,
+            "three protocols from each host"
+        );
         assert_eq!(matches(&filter, &packets), 3, "only the other host's");
         assert_eq!(
-            matches(&all_excluding_self(&[frames::SELF_MAC, frames::OTHER_MAC]), &packets),
+            matches(
+                &all_excluding_self(&[frames::SELF_MAC, frames::OTHER_MAC]),
+                &packets
+            ),
             0,
             "excluding both hosts leaves nothing"
         );
@@ -419,6 +437,9 @@ mod tests {
 
         let packets = one_of_each(frames::SELF_MAC);
 
-        assert_eq!(matches(&all_excluding_self(&[]), &packets), matches(&all(), &packets));
+        assert_eq!(
+            matches(&all_excluding_self(&[]), &packets),
+            matches(&all(), &packets)
+        );
     }
 }

@@ -233,18 +233,18 @@ pub fn listen(
         // turn a broken instrument into evidence about the segment.
         match listener.join() {
             Ok(result) => heard.push(result?),
-            Err(_) => return Err(pcap::Error::PcapError("a capture thread panicked".to_owned())),
+            Err(_) => {
+                return Err(pcap::Error::PcapError(
+                    "a capture thread panicked".to_owned(),
+                ))
+            }
         }
     }
 
     Ok(heard)
 }
 
-fn listen_one(
-    device: &str,
-    filter: &str,
-    running: &AtomicBool,
-) -> Result<Heard, pcap::Error> {
+fn listen_one(device: &str, filter: &str, running: &AtomicBool) -> Result<Heard, pcap::Error> {
     // Promiscuous, because LLDP and STP go to group addresses this adapter has not joined and the
     // MAC would drop them at its hardware filter.
     let mut capture = pcap::Capture::from_device(device)?
@@ -284,7 +284,10 @@ mod tests {
 
     #[test]
     fn each_protocol_is_recognised_by_its_own_shape() {
-        assert_eq!(Protocol::of(&frame_with(&[0x88, 0xCC])), Some(Protocol::Lldp));
+        assert_eq!(
+            Protocol::of(&frame_with(&[0x88, 0xCC])),
+            Some(Protocol::Lldp)
+        );
         assert_eq!(
             Protocol::of(&frame_with(&[0x00, 0x26, 0x42, 0x42])),
             Some(Protocol::Stp)
@@ -326,7 +329,10 @@ mod tests {
 
     #[test]
     fn the_discriminator_is_read_from_the_flag_not_a_fixed_index() {
-        let index = SWEEP.iter().position(|p| p.discriminating).expect("one decides");
+        let index = SWEEP
+            .iter()
+            .position(|p| p.discriminating)
+            .expect("one decides");
         let mut arrived = [0u32; SWEEP.len()];
         arrived[index] = 7;
 
