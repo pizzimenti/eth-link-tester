@@ -249,6 +249,114 @@
                 </StackPanel>
             </Border>
 
+            <!--
+              Topology. Placed above the pre-run hazards because it is the question that decides
+              whether any later number can be attributed to a cable at all, and below the rig
+              summary because it needs the pair that summary describes.
+            -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="16">
+                <StackPanel Spacing="12">
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Text="Topology"
+                                       Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <TextBlock Text="{x:Bind ViewModel.Topology.Headline, Mode=OneWay}"
+                                       Style="{StaticResource BodyTextBlockStyle}"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+
+                        <Button Grid.Column="1"
+                                Command="{x:Bind ViewModel.Topology.DetectCommand}"
+                                VerticalAlignment="Top"
+                                AutomationProperties.Name="Detect topology">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE721;" FontSize="14" />
+                                <TextBlock Text="Detect" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+
+                    <muxc:ProgressBar IsIndeterminate="True"
+                                      Visibility="{x:Bind ViewModel.Topology.IsBusy, Mode=OneWay}" />
+
+                    <TextBlock Text="{x:Bind ViewModel.Topology.Detail, Mode=OneWay}"
+                               TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                    <!--
+                      The disruption opt-in, with its cost stated next to it rather than in a
+                      tooltip. Declining is a reasonable choice and it has a consequence the user
+                      would otherwise read as the tool failing.
+                    -->
+                    <CheckBox IsChecked="{x:Bind ViewModel.Topology.AllowDisruptive, Mode=TwoWay}"
+                              AutomationProperties.Name="Allow the forced-speed test, which briefly drops the link">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Allow the forced-speed test" />
+                            <TextBlock TextWrapping="Wrap"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Text="Pins one port to 100 Mbps and watches whether the other follows. It drops the link for a few seconds and puts the setting back afterwards. It is the only test here that can positively show a direct cable - without it a healthy direct rig reports an unestablished topology." />
+                        </StackPanel>
+                    </CheckBox>
+
+                    <muxc:InfoBar IsOpen="True" IsClosable="False"
+                                  Severity="{x:Bind ViewModel.Topology.Severity, Mode=OneWay}"
+                                  Title="Grading"
+                                  Message="{x:Bind ViewModel.Topology.GradingNote, Mode=OneWay}" />
+
+                    <muxc:InfoBar IsOpen="{x:Bind ViewModel.Topology.HasError, Mode=OneWay}"
+                                  IsClosable="False" Severity="Error"
+                                  Title="Detection failed"
+                                  Message="{x:Bind ViewModel.Topology.ErrorMessage, Mode=OneWay}" />
+
+                    <!--
+                      Every signal, including the ones that did not run. A report that silently
+                      omits what it skipped claims coverage it does not have.
+                    -->
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Topology.Observations}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:TopologyObservationViewModel">
+                                <Grid ColumnSpacing="10" Margin="0,6,0,0"
+                                      AutomationProperties.Name="{x:Bind Announcement}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <FontIcon Grid.Column="0" Glyph="{x:Bind Glyph}" FontSize="14"
+                                              VerticalAlignment="Top" Margin="0,3,0,0"
+                                              Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                    <StackPanel Grid.Column="1" Spacing="1">
+                                        <!--
+                                          Signal and status as text on one line. The glyph is
+                                          decoration beside a label that says the same thing - a
+                                          verdict must never be carried by colour or shape alone.
+                                        -->
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <TextBlock Text="{x:Bind Signal}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{x:Bind Status}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                        <TextBlock Text="{x:Bind Detail}" TextWrapping="Wrap"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
             <!-- Pre-run hazards -->
             <ItemsControl ItemsSource="{x:Bind ViewModel.Warnings}"
                           Visibility="{x:Bind ViewModel.WarningsVisibility, Mode=OneWay}">

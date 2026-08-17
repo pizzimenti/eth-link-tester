@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using EthLinkTester.Core;
@@ -60,7 +62,32 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
         _provider = provider;
         _configurator = configurator;
         _npcap = npcap;
+
+        // The probe is built per detection rather than once, because it resolves adapter ids to
+        // device names and MACs from the list this page is holding at the time. Resolving them
+        // twice, from two enumerations taken at different moments, is how two components come to
+        // disagree about which adapter is which.
+        Topology = new TopologyViewModel(
+            provider,
+            configurator,
+            pair => new NativeTopologyProbe(
+                NativePacketEngine.DeviceName,
+                id => ParseMac(pair.First(a => a.Id == id).MacAddress)));
     }
+
+    /// <summary>Whether these two adapters are wired to each other, and what says so.</summary>
+    public TopologyViewModel Topology { get; }
+
+    /// <summary>
+    /// Turns the provider's dashed MAC into the six bytes the engine puts in a frame header.
+    /// </summary>
+    /// <remarks>
+    /// Colons as well as dashes, because the two spellings both reach this app: the CIM provider
+    /// gives dashes and every command-line tool on the machine prints colons, so a user pasting one
+    /// in is the ordinary case rather than the odd one.
+    /// </remarks>
+    private static byte[] ParseMac(string address) =>
+        [.. address.Split('-', ':').Select(part => byte.Parse(part, NumberStyles.HexNumber))];
 
     /// <summary>
     /// Machine-wide rather than per-user, because a run can outlive the session that started it
@@ -339,6 +366,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
             }
 
             DescribeRig(adapters, capabilities);
+            Topology.SetPair(adapters);
         }
         catch (Exception ex)
         {
