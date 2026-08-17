@@ -61,7 +61,7 @@ public sealed class TopologyDetector
     }
 
     /// <summary>Runs the signals and returns the combined verdict.</summary>
-    public async Task<TopologyVerdict> DetectAsync(
+    public async Task<TopologyDetection> DetectAsync(
         TopologyDetectionRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -91,15 +91,18 @@ public sealed class TopologyDetector
             "Not run: taking one port administratively down and watching the other is not "
             + "implemented yet. The forced-speed probe tests the same coupling less brutally."));
 
-        observations.Add(
-            await ForcedSpeedAsync(request, observations, cancellationToken).ConfigureAwait(false));
+        var (forcedSpeed, restore) = await ForcedSpeedAsync(
+            request, observations, cancellationToken).ConfigureAwait(false);
+        observations.Add(forcedSpeed);
 
-        return TopologyVerdict.From(observations) with
+        var verdict = TopologyVerdict.From(observations) with
         {
             TransmitAdapterId = request.TransmitAdapterId,
             ReceiveAdapterId = request.ReceiveAdapterId,
             MeasuredAt = _time.GetUtcNow(),
         };
+
+        return new TopologyDetection(verdict, restore);
     }
 
     private async Task<TopologyObservation> SweepAsync(
@@ -156,18 +159,21 @@ public sealed class TopologyDetector
     /// <summary>
     /// Forces one end to 100 Mbps, reads both, and puts the setting back.
     /// </summary>
-    private async Task<TopologyObservation> ForcedSpeedAsync(
+    private async Task<(TopologyObservation Observation, RestoreOutcome? Restore)> ForcedSpeedAsync(
         TopologyDetectionRequest request,
         IReadOnlyList<TopologyObservation> soFar,
         CancellationToken cancellationToken)
     {
+        RestoreOutcome? restore = null;
+
         if (!request.AllowDisruptive)
         {
-            return TopologyObservation.NotRun(
+            return (TopologyObservation.NotRun(
                 TopologySignal.ForcedSpeedAsymmetry,
                 "Not run: the disruptive tests were declined. This is the only signal that can "
                 + "positively demonstrate a direct cable, so without it a healthy direct rig "
-                + "reports an unestablished topology and results cannot be attributed to a cable.");
+                + "reports an unestablished topology and results cannot be attributed to a cable."),
+                restore);
         }
 
         // Nothing to gain and a link to lose. A conclusive bridge from the free comparison already
@@ -176,10 +182,11 @@ public sealed class TopologyDetector
         if (soFar.Any(o => o.Finding == TopologyFinding.Bridged
                         && o.Strength == SignalStrength.Conclusive))
         {
-            return TopologyObservation.NotRun(
+            return (TopologyObservation.NotRun(
                 TopologySignal.ForcedSpeedAsymmetry,
                 "Not run: the two ports already negotiated different speeds, which one cable "
-                + "cannot do. Forcing a speed would bounce the link to re-prove a settled point.");
+                + "cannot do. Forcing a speed would bounce the link to re-prove a settled point."),
+                restore);
         }
 
         var (transmit, receive) = await ReadPairAsync(request, cancellationToken)
@@ -194,38 +201,51 @@ public sealed class TopologyDetector
                 ? (receive, transmit)
                 : (transmit, receive);
 
-        ConfigurationOutcome outcome;
+        // The observation is built into a local and returned *after* the cleanup, not returned from
+        // inside the try. A `return` evaluates its expression before the finally runs, so returning
+        // the tuple here would capture `restore` while it was still null and silently report every
+        // failed restore as no restore at all - which a test caught, and reading would not have.
+        TopologyObservation observation;
 
+        // The force is inside the try, not before it. GuardedAdapterConfigurator records the
+        // original value durably and *then* writes, so a write that throws leaves a journal entry
+        // behind and an adapter that may or may not have changed - and a catch outside the finally
+        // would return a harmless-looking "not run" while walking away from it. Restoring a scope
+        // that was never journaled is a no-op, so there is no cost to always entering the cleanup.
         try
         {
-            outcome = await _configurator
-                .ForceSpeedAsync(forced, request.ForceTarget, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // The commonest cause by far, and not a defect: plenty of drivers offer no fixed
-            // 100 Mbps setting at all, and one on this rig advertises a gigabit it does not honour.
-            return TopologyObservation.NotRun(
-                TopologySignal.ForcedSpeedAsymmetry,
-                $"Not run: {forced.Name} would not take a forced {request.ForceTarget}. {ex.Message}");
-        }
+            ConfigurationOutcome outcome;
 
-        try
-        {
-            var (forcedAfter, freeAfter) = await SettleAsync(
-                    request, forced.Id, free.Id, request.ForceTarget.Speed, cancellationToken)
-                .ConfigureAwait(false);
-
-            return ForcedSpeedAsymmetrySignal.Observe(new ForcedSpeedProbe
+            try
             {
-                ForcedBefore = forced,
-                FreeBefore = free,
-                ForcedAfter = forcedAfter,
-                FreeAfter = freeAfter,
-                Outcome = outcome,
-                Target = request.ForceTarget.Speed,
-            });
+                outcome = await _configurator
+                    .ForceSpeedAsync(forced, request.ForceTarget, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var (forcedAfter, freeAfter) = await SettleAsync(
+                        request, forced.Id, free.Id, request.ForceTarget.Speed, cancellationToken)
+                    .ConfigureAwait(false);
+
+                observation = ForcedSpeedAsymmetrySignal.Observe(new ForcedSpeedProbe
+                {
+                    ForcedBefore = forced,
+                    FreeBefore = free,
+                    ForcedAfter = forcedAfter,
+                    FreeAfter = freeAfter,
+                    Outcome = outcome,
+                    Target = request.ForceTarget.Speed,
+                });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The commonest cause by far, and not a defect: plenty of drivers offer no fixed
+                // 100 Mbps setting at all, and one on this rig advertises a gigabit it does not
+                // honour.
+                observation = TopologyObservation.NotRun(
+                    TopologySignal.ForcedSpeedAsymmetry,
+                    $"Not run: {forced.Name} would not take a forced {request.ForceTarget}. "
+                    + ex.Message);
+            }
         }
         finally
         {
@@ -233,7 +253,13 @@ public sealed class TopologyDetector
             // success: the whole reason for the journal is that an unrestored adapter is worse than
             // a missing measurement, and an exception on the way through here is exactly when the
             // restore matters most.
-            await _configurator.RestoreAsync(
+            //
+            // The outcome is kept rather than discarded. RestoreAsync reports a refused write in
+            // Failures rather than throwing, so dropping it would let detection finish, the UI show
+            // a verdict, and the adapter stay pinned at 100 Mbps with nobody told - recoverable on
+            // the next launch, which is not the same as harmless when the port is someone's
+            // network.
+            restore = await _configurator.RestoreAsync(
                     RestoreScope.Property(forced.Id, WellKnownKeywords.SpeedDuplex),
                     CancellationToken.None)
                 .ConfigureAwait(false);
@@ -241,6 +267,8 @@ public sealed class TopologyDetector
             await SettleAsync(request, forced.Id, free.Id, expected: null, CancellationToken.None)
                 .ConfigureAwait(false);
         }
+
+        return (observation, restore);
     }
 
     /// <summary>

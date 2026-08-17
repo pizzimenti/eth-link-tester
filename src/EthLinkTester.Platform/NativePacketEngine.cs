@@ -126,19 +126,17 @@ public sealed class NativePacketEngine : IPacketEngine
             _ = elt_engine_stop(stale);
         }
 
-        // The first pcap call must not be the thing that discovers Npcap is missing. wpcap is
-        // delay-loaded, so a missing DLL surfaces as an MSVC loader exception raised from inside
-        // the engine on first use - a foreign exception outside `catch_unwind`'s contract, which
-        // can terminate the process instead of producing the ELT_ERR_OPEN_FAILED the ABI promises.
-        // The Rig page's preflight checks this, but Lab Mode's hardware start does not go through
-        // it, so the check belongs here where every hardware run passes.
-        if (!NpcapLoader.TryLoad())
+        // Before any pcap call, because a delay-load failure is a foreign exception the ABI cannot
+        // turn into a code. The Rig page's preflight checks this too, but Lab Mode's hardware start
+        // does not go through it, so every hardware entry point checks for itself.
+        try
+        {
+            NativeEngineLibrary.RequireNpcap();
+        }
+        catch
         {
             State = EngineState.Idle;
-            throw new InvalidOperationException(
-                "Npcap is not installed, or is not where this expects it "
-                + $"({NpcapLoader.NpcapDirectory}). Install it from https://npcap.com with "
-                + "WinPcap-compatible mode turned off.");
+            throw;
         }
 
         // Checked on the way in to the first run rather than at application startup. Doing it at

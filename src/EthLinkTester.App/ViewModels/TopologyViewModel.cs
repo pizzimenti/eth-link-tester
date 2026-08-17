@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using EthLinkTester.Core.Adapters;
+using EthLinkTester.Core.Preflight;
 using EthLinkTester.Core.Topology;
 using Microsoft.UI.Xaml.Controls;
 
@@ -98,6 +99,7 @@ internal sealed partial class TopologyViewModel : ObservableObject
 {
     private readonly IAdapterProvider _provider;
     private readonly IAdapterConfigurator _configurator;
+    private readonly ISoftwareBridgeProbe _bridges;
     private readonly Func<IReadOnlyList<NetworkAdapterInfo>, ITopologyProbe> _probeFactory;
 
     private IReadOnlyList<NetworkAdapterInfo> _pair = [];
@@ -105,14 +107,17 @@ internal sealed partial class TopologyViewModel : ObservableObject
     public TopologyViewModel(
         IAdapterProvider provider,
         IAdapterConfigurator configurator,
+        ISoftwareBridgeProbe bridges,
         Func<IReadOnlyList<NetworkAdapterInfo>, ITopologyProbe> probeFactory)
     {
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(configurator);
+        ArgumentNullException.ThrowIfNull(bridges);
         ArgumentNullException.ThrowIfNull(probeFactory);
 
         _provider = provider;
         _configurator = configurator;
+        _bridges = bridges;
         _probeFactory = probeFactory;
     }
 
@@ -166,13 +171,31 @@ internal sealed partial class TopologyViewModel : ObservableObject
     [ObservableProperty]
     public partial string GradingNote { get; set; } = "Not established.";
 
+    /// <summary>
+    /// Something found in preflight that does not stop the run but has to appear on the report.
+    /// </summary>
+    /// <remarks>
+    /// An unrecognised protocol binding is the case: it may be vendor teaming and it may be
+    /// harmless, and enumerating every vendor's component id is a losing game. A maybe belongs on
+    /// the report rather than in a refusal.
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCaveat))]
+    public partial string? Caveat { get; set; }
+
+    public bool HasCaveat => !string.IsNullOrWhiteSpace(Caveat);
+
     /// <summary>Called by the rig page whenever its adapter list changes.</summary>
     public void SetPair(IReadOnlyList<NetworkAdapterInfo> adapters)
     {
         ArgumentNullException.ThrowIfNull(adapters);
 
-        _pair = adapters;
-        RigIsComplete = adapters.Count == 2;
+        // The first two, matching what RigViewModel already derives the rig's capabilities from.
+        // Requiring exactly two here would have made a three-adapter machine show a complete rig
+        // beside a topology panel that refused to run, disagreeing about the same hardware. Picking
+        // the pair properly is a Suite Mode feature; agreeing with the page it sits on is today's.
+        _pair = [.. adapters.Take(2)];
+        RigIsComplete = _pair.Count == 2;
 
         // A verdict describes the pair it was taken on, so it stops meaning anything the moment the
         // pair changes. Clearing is the only honest response; keeping it would let a reading from
@@ -191,18 +214,55 @@ internal sealed partial class TopologyViewModel : ObservableObject
     {
         IsBusy = true;
         ErrorMessage = null;
+        Caveat = null;
         Observations.Clear();
 
         try
         {
+            // Preflight before anything is sent. A vSwitch, a Windows bridge or a team means the
+            // frames may never reach a wire at all, and a topology verdict taken through one would
+            // describe software while pointing at a cable - which is the failure this whole phase
+            // is shaped to avoid. Refused loudly rather than hidden: the adapter is present and
+            // working, and someone hunting for a NIC that vanished from a list is worse off than
+            // someone told what to unbind.
+            foreach (var adapter in _pair)
+            {
+                var bridge = await _bridges.InspectAsync(adapter.Id);
+
+                if (bridge.BlocksRun)
+                {
+                    Headline = "Cannot measure this adapter";
+                    Detail = bridge.Detail;
+                    Severity = InfoBarSeverity.Error;
+                    GradingIsAttributable = false;
+                    GradingNote = "Not established, and nothing here would describe a cable.";
+                    return;
+                }
+
+                if (bridge.NeedsCaveat)
+                {
+                    Caveat = bridge.Detail;
+                }
+            }
+
             var detector = new TopologyDetector(_provider, _configurator, _probeFactory(_pair));
 
-            var verdict = await detector.DetectAsync(new TopologyDetectionRequest
+            var detection = await detector.DetectAsync(new TopologyDetectionRequest
             {
                 TransmitAdapterId = _pair[0].Id,
                 ReceiveAdapterId = _pair[1].Id,
                 AllowDisruptive = AllowDisruptive,
             });
+
+            var verdict = detection.Verdict;
+
+            // A port this run pinned and could not put back is worth more of the user's attention
+            // than the verdict is. The journal will replay it on the next launch, which only helps
+            // someone who knows there is something to replay.
+            if (detection.RestoreNeedsAttention)
+            {
+                ErrorMessage = detection.RestoreWarning;
+            }
 
             foreach (var observation in verdict.Observations)
             {

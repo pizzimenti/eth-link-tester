@@ -75,6 +75,35 @@ internal static class NativeEngineLibrary
     }
 
     /// <summary>
+    /// Throws unless Npcap is present, before anything reaches a pcap call.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The first pcap call must not be the thing that discovers Npcap is missing.</b> wpcap is
+    /// delay-loaded, so an absent DLL surfaces as an MSVC loader exception raised from inside the
+    /// engine on first use - a foreign exception outside <c>catch_unwind</c>'s contract, which can
+    /// terminate the process instead of producing the error code the ABI promises.
+    /// </para>
+    /// <para>
+    /// Every entry point that reaches pcap calls this. That sentence was already in the resolver's
+    /// comment while only one of them did, which is the kind of promise a comment cannot keep on its
+    /// own - so it lives here as a method the callers share rather than as a rule they remember.
+    /// </para>
+    /// </remarks>
+    public static void RequireNpcap()
+    {
+        if (NpcapLoader.TryLoad())
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "Npcap is not installed, or is not where this expects it "
+            + $"({NpcapLoader.NpcapDirectory}). Install it from https://npcap.com with "
+            + "WinPcap-compatible mode turned off.");
+    }
+
+    /// <summary>
     /// What a non-zero result code means, in words a user can act on.
     /// </summary>
     /// <remarks>

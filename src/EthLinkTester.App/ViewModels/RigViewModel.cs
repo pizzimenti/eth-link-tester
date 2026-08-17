@@ -70,6 +70,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
         Topology = new TopologyViewModel(
             provider,
             configurator,
+            new WindowsSoftwareBridgeProbe(),
             pair => new NativeTopologyProbe(
                 NativePacketEngine.DeviceName,
                 id => ParseMac(pair.First(a => a.Id == id).MacAddress)));

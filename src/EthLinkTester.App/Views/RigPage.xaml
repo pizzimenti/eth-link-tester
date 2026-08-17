@@ -314,8 +314,18 @@
 
                     <muxc:InfoBar IsOpen="{x:Bind ViewModel.Topology.HasError, Mode=OneWay}"
                                   IsClosable="False" Severity="Error"
-                                  Title="Detection failed"
+                                  Title="Detection problem"
                                   Message="{x:Bind ViewModel.Topology.ErrorMessage, Mode=OneWay}" />
+
+                    <!--
+                      A maybe from preflight: an unrecognised protocol binding may be vendor
+                      teaming and may be nothing. It does not stop the run and it does belong on
+                      the report.
+                    -->
+                    <muxc:InfoBar IsOpen="{x:Bind ViewModel.Topology.HasCaveat, Mode=OneWay}"
+                                  IsClosable="False" Severity="Warning"
+                                  Title="Something else is bound to this adapter"
+                                  Message="{x:Bind ViewModel.Topology.Caveat, Mode=OneWay}" />
 
                     <!--
                       Every signal, including the ones that did not run. A report that silently

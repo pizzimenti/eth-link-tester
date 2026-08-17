@@ -61,6 +61,8 @@ public sealed class NativeTopologyProbe : ITopologyProbe
         string receiveAdapterId,
         CancellationToken cancellationToken = default)
     {
+        NativeEngineLibrary.RequireNpcap();
+
         var addresses = Enum.GetValues<ProbeAddress>();
         var expected = elt_sweep_addresses();
 
@@ -102,6 +104,8 @@ public sealed class NativeTopologyProbe : ITopologyProbe
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(adapterIds);
+
+        NativeEngineLibrary.RequireNpcap();
 
         // Exactly two, because that is what a link has ends. A wider signature would suggest this
         // scales to a segment with three listeners, which the engine's entry point does not.

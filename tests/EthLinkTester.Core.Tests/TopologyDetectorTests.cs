@@ -44,6 +44,12 @@ public class TopologyDetectorTests
         /// <summary>Set to make the driver refuse the forced setting.</summary>
         public string? ForceRefusal { get; set; }
 
+        /// <summary>Set to make the force throw *after* the journal entry has been written.</summary>
+        public string? ForceFailsAfterJournalling { get; set; }
+
+        /// <summary>Set to make the restore report a refused write, as the real one does.</summary>
+        public string? RestoreFailure { get; set; }
+
         public List<ProbeResult> SweepResults { get; } = [];
 
         public PassiveListenResult Heard { get; set; }
@@ -102,6 +108,14 @@ public class TopologyDetectorTests
                 throw new InvalidOperationException(ForceRefusal);
             }
 
+            if (ForceFailsAfterJournalling is not null)
+            {
+                // The order the real configurator uses: record durably, then write. A write that
+                // throws leaves the entry behind and an adapter that may already have changed.
+                Forced.Add(adapter.Id);
+                throw new InvalidOperationException(ForceFailsAfterJournalling);
+            }
+
             Forced.Add(adapter.Id);
             Speeds[adapter.Id] = setting.Speed.BitsPerSecond();
             Duplex[adapter.Id] = setting.Duplex;
@@ -128,6 +142,32 @@ public class TopologyDetectorTests
             RestoreScope scope, CancellationToken cancellationToken = default)
         {
             Restores.Add(scope);
+
+            if (RestoreFailure is not null)
+            {
+                // Reported rather than thrown, which is what the real one does: one adapter
+                // refusing a write must not abandon the others.
+                return Task.FromResult(new RestoreOutcome
+                {
+                    Restored = [],
+                    Failures =
+                    [
+                        new RestoreFailure
+                        {
+                            Entry = new PendingRestore
+                            {
+                                AdapterId = TxId,
+                                AdapterName = "Ethernet",
+                                PropertyKeyword = "*SpeedDuplex",
+                                OriginalValue = "0",
+                                RecordedUtc = DateTimeOffset.UnixEpoch,
+                            },
+                            Reason = RestoreFailure,
+                        },
+                    ],
+                    JournalCleared = false,
+                });
+            }
 
             foreach (var id in Forced)
             {
@@ -186,7 +226,7 @@ public class TopologyDetectorTests
         var (rig, detector) = Build();
         CrossingSweep(rig);
 
-        var verdict = await detector.DetectAsync(Request());
+        var verdict = (await detector.DetectAsync(Request())).Verdict;
 
         Assert.Equal(
             Enum.GetValues<TopologySignal>().Length,
@@ -210,7 +250,7 @@ public class TopologyDetectorTests
         var (rig, detector) = Build();
         CrossingSweep(rig);
 
-        var verdict = await detector.DetectAsync(Request());
+        var verdict = (await detector.DetectAsync(Request())).Verdict;
 
         Assert.Equal(TopologyConclusion.Unknown, verdict.Conclusion);
         Assert.False(verdict.GradingIsAttributable);
@@ -235,7 +275,7 @@ public class TopologyDetectorTests
             r.Duplex[RxId] = DuplexMode.Half;
         };
 
-        var verdict = await detector.DetectAsync(Request(disruptive: true));
+        var verdict = (await detector.DetectAsync(Request(disruptive: true))).Verdict;
 
         Assert.Equal(TopologyConclusion.Direct, verdict.Conclusion);
         Assert.True(verdict.GradingIsAttributable);
@@ -250,7 +290,7 @@ public class TopologyDetectorTests
         CrossingSweep(rig);
         rig.OnForce = _ => { };
 
-        var verdict = await detector.DetectAsync(Request(disruptive: true));
+        var verdict = (await detector.DetectAsync(Request(disruptive: true))).Verdict;
 
         Assert.Equal(TopologyConclusion.Bridged, verdict.Conclusion);
         Assert.Equal(TopologyConfidence.High, verdict.Confidence);
@@ -298,7 +338,7 @@ public class TopologyDetectorTests
             r.Duplex[TxId] = DuplexMode.Half;
         };
 
-        var verdict = await detector.DetectAsync(Request(disruptive: true));
+        var verdict = (await detector.DetectAsync(Request(disruptive: true))).Verdict;
 
         Assert.Equal([RxId], rig.Forced);
         Assert.Equal(TopologyConclusion.Direct, verdict.Conclusion);
@@ -314,7 +354,7 @@ public class TopologyDetectorTests
         CrossingSweep(rig);
         rig.Speeds[RxId] = Fast;
 
-        var verdict = await detector.DetectAsync(Request(disruptive: true));
+        var verdict = (await detector.DetectAsync(Request(disruptive: true))).Verdict;
 
         Assert.Empty(rig.Forced);
         Assert.Equal(TopologyConclusion.Bridged, verdict.Conclusion);
@@ -340,7 +380,7 @@ public class TopologyDetectorTests
         CrossingSweep(rig);
         rig.ForceRefusal = "'Ethernet' does not offer 100 Mbps Full Duplex.";
 
-        var verdict = await detector.DetectAsync(Request(disruptive: true));
+        var verdict = (await detector.DetectAsync(Request(disruptive: true))).Verdict;
 
         var observation = verdict.Observations.Single(
             o => o.Signal == TopologySignal.ForcedSpeedAsymmetry);
@@ -359,7 +399,7 @@ public class TopologyDetectorTests
         var (rig, detector) = Build();
         rig.SweepFailure = new InvalidOperationException("Npcap is not installed");
 
-        var verdict = await detector.DetectAsync(Request());
+        var verdict = (await detector.DetectAsync(Request())).Verdict;
 
         var observation = verdict.Observations.Single(
             o => o.Signal == TopologySignal.ReservedMulticastProbe);
@@ -377,8 +417,8 @@ public class TopologyDetectorTests
         CrossingSweep(rig);
         rig.Heard = new PassiveListenResult(TimeSpan.FromSeconds(200), Lldp: 4, Stp: 0, Cdp: 0);
 
-        var verdict = await detector.DetectAsync(
-            Request(passive: TimeSpan.FromSeconds(200)));
+        var verdict = (await detector.DetectAsync(
+            Request(passive: TimeSpan.FromSeconds(200)))).Verdict;
 
         Assert.Equal(TopologyConclusion.Bridged, verdict.Conclusion);
         Assert.Contains("LLDP", verdict.Summary, StringComparison.Ordinal);
@@ -391,10 +431,74 @@ public class TopologyDetectorTests
         var (rig, detector) = Build();
         FilteredSweep(rig);
 
-        var verdict = await detector.DetectAsync(Request());
+        var verdict = (await detector.DetectAsync(Request())).Verdict;
 
         Assert.Equal(TopologyConclusion.Bridged, verdict.Conclusion);
         Assert.Equal(TopologyConfidence.Moderate, verdict.Confidence);
+    }
+
+    /// <summary>
+    /// A force that throws after journalling still gets its restore.
+    /// </summary>
+    /// <remarks>
+    /// The configurator records the original value durably and then writes, so a write that fails
+    /// leaves an entry behind and an adapter that may or may not have changed. Catching outside the
+    /// cleanup would return a harmless-looking "not run" while walking away from a pinned port.
+    /// </remarks>
+    [Fact]
+    public async Task AForceThatThrewAfterJournalling_IsStillRestored()
+    {
+        var (rig, detector) = Build();
+        CrossingSweep(rig);
+        rig.ForceFailsAfterJournalling = "the driver reported the write as failed";
+
+        var detection = await detector.DetectAsync(Request(disruptive: true));
+
+        Assert.Single(rig.Restores);
+        Assert.False(
+            detection.Verdict.Observations
+                .Single(o => o.Signal == TopologySignal.ForcedSpeedAsymmetry).Ran);
+    }
+
+    /// <summary>
+    /// A restore that could not put the setting back is surfaced, not swallowed.
+    /// </summary>
+    /// <remarks>
+    /// RestoreAsync reports a refused write in Failures rather than throwing - by design, since one
+    /// adapter refusing must not abandon the others. Discarding it lets detection finish, the page
+    /// show a verdict, and the port stay pinned with nobody told. Recoverable on the next launch is
+    /// not the same as harmless when the port may be carrying someone's network.
+    /// </remarks>
+    [Fact]
+    public async Task ARestoreThatFailed_IsCarriedOnTheResult()
+    {
+        var (rig, detector) = Build();
+        CrossingSweep(rig);
+        rig.OnForce = r => r.Speeds[RxId] = Fast;
+        rig.RestoreFailure = "the driver refused the write";
+
+        var detection = await detector.DetectAsync(Request(disruptive: true));
+
+        Assert.True(detection.RestoreNeedsAttention);
+        Assert.Contains("Ethernet", detection.RestoreWarning!, StringComparison.Ordinal);
+        Assert.Contains("refused the write", detection.RestoreWarning!, StringComparison.Ordinal);
+
+        // And the verdict itself still stands: the measurement happened, the cleanup did not.
+        Assert.Equal(TopologyConclusion.Direct, detection.Verdict.Conclusion);
+    }
+
+    /// <summary>Nothing forced means nothing to restore, and nothing to warn about.</summary>
+    [Fact]
+    public async Task ARunThatForcedNothing_HasNoRestoreToReport()
+    {
+        var (rig, detector) = Build();
+        CrossingSweep(rig);
+
+        var detection = await detector.DetectAsync(Request());
+
+        Assert.Null(detection.Restore);
+        Assert.False(detection.RestoreNeedsAttention);
+        Assert.Null(detection.RestoreWarning);
     }
 
     /// <summary>The verdict knows which pair it describes and when it was taken.</summary>
@@ -409,7 +513,7 @@ public class TopologyDetectorTests
         var (rig, detector) = Build();
         CrossingSweep(rig);
 
-        var verdict = await detector.DetectAsync(Request());
+        var verdict = (await detector.DetectAsync(Request())).Verdict;
 
         Assert.Equal(TxId, verdict.TransmitAdapterId);
         Assert.Equal(RxId, verdict.ReceiveAdapterId);
