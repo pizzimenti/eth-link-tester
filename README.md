@@ -134,6 +134,45 @@ separately from the bulk traffic and leaves a bubble in the driver's pipeline. T
 measured at 1518 bytes only and does not transfer to other frame sizes. RFC 2544 measures
 throughput and latency in separate tests for exactly this reason, which is what Phase 5 will do.
 
+### Topology, measured on the same rig
+
+Phase 4 asks whether the two adapters are wired to each other or have something in between, and it
+is deliberately hard to satisfy: it reaches "bridged" from any credible sign and "direct" only from
+a signal that can positively demonstrate one. Calling a direct cable bridged wastes an afternoon;
+calling a bridged path direct makes every grade that follows it a lie about a cable that was never
+alone in the path.
+
+| | Result on a known-direct cable |
+|---|---|
+| Reserved-multicast sweep | **20 of 20** on all four addresses, both directions — `topocheck` |
+| Passive listen, 190 s | **Nothing heard** on either NIC, which settles nothing and says so — `passivecheck` |
+| Forced-speed asymmetry | Killer pinned to 100 Mbps, Realtek followed it down from 1 Gbps in **under 2 s**, restored afterwards |
+| Combined verdict | **Direct, moderate confidence, grading attributable** |
+| With the forced-speed test declined | **Unknown** — and that is the correct answer, not a failure |
+
+That last row is the point. Both ports at a gigabit with every reserved address crossing is exactly
+what a direct cable looks like *and* exactly what a media converter or PHY repeater looks like. Only
+the forced-speed test can tell them apart, so declining it leaves the question open and nothing may
+be graded against it.
+
+**Two things the hardware corrected.** The standards reading says a forced PHY stops sending fast
+link pulses, so its partner falls back on parallel detection — which carries speed but not duplex
+and therefore comes up **half**, making a far end at 100 *full* proof of something negotiating in
+the path. On this rig it comes up **full**, on a bare cable, because a driver asked for a fixed
+speed may restrict its advertised capability and keep negotiating rather than disabling negotiation
+at all. A duplex-based verdict would have called the reference rig bridged. And writing
+`*SpeedDuplex` bounces the link at *both* ends, so a detector that waits only for the forced adapter
+reads the other one while it is still down and reports a dark link on a cable that was never dark.
+
+Neither was visible in source review. Both were found by running it.
+
+**The bridged half has not been calibrated against copper.** Every "something is in the path" result
+is verified by unit tests over synthetic inputs and by nothing else; the reference NETGEAR GS308 has
+yet to be put in line. Its silicon is a Broadcom BCM53128, which in unmanaged mode drops
+`01:80:C2:00:00:02`–`0F` and floods unknown multicast, so the expected result is a control frame
+through and all three reserved probes absorbed. Until that has actually been run, treat a bridged
+verdict as untested.
+
 ## What it is not
 
 This measures **behavior**, not physical-layer parameters. It does not and cannot replace a
