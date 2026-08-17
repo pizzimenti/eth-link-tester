@@ -143,6 +143,45 @@ public class TopologyVerdictTests
         Assert.Equal(TopologyFinding.Inconclusive, verdict.Observations[^1].Finding);
     }
 
+    /// <summary>
+    /// Two decisive signals of different strengths, which is the only shape that can see the sort
+    /// order at all.
+    /// </summary>
+    /// <remarks>
+    /// Nothing pinned this before, and the existing ordering test uses a single decisive
+    /// observation - so the sort could invert, and did, with the suite staying green either way. A
+    /// test that cannot fail when the behaviour its name describes breaks is not covering it.
+    /// </remarks>
+    [Fact]
+    public void TheStrongestAgreeingSignal_SortsFirst()
+    {
+        var verdict = TopologyVerdict.From(
+        [
+            Says(TopologySignal.BridgeProtocolTraffic, TopologyFinding.Bridged, SignalStrength.Suggestive),
+            Says(TopologySignal.LinkSpeedMismatch, TopologyFinding.Bridged, SignalStrength.Conclusive),
+        ]);
+
+        Assert.Equal(SignalStrength.Conclusive, verdict.Observations[0].Strength);
+    }
+
+    /// <summary>
+    /// And the consequence that made the sort worth pinning: the printed basis is the signal that
+    /// settled the verdict, not the weakest one that happened to agree with it.
+    /// </summary>
+    [Fact]
+    public void Summary_CitesTheSignalThatSettledIt()
+    {
+        var decisive = Says(
+            TopologySignal.LinkSpeedMismatch, TopologyFinding.Bridged, SignalStrength.Conclusive);
+        var weak = Says(
+            TopologySignal.BridgeProtocolTraffic, TopologyFinding.Bridged, SignalStrength.Suggestive);
+
+        var verdict = TopologyVerdict.From([weak, decisive]);
+
+        Assert.Contains(decisive.Detail, verdict.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain(weak.Detail, verdict.Summary, StringComparison.Ordinal);
+    }
+
     /// <summary>An unestablished topology says so, rather than describing a link it did not find.</summary>
     [Fact]
     public void UnknownSummary_SaysResultsCannotBeAttributed()

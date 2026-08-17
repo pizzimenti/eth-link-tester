@@ -198,10 +198,22 @@ public sealed record TopologyVerdict(
         };
     }
 
-    /// <summary>Decisive signals first, so a report leads with what settled it.</summary>
+    /// <summary>
+    /// Decisive signals first, so a report leads with what settled it.
+    /// </summary>
+    /// <remarks>
+    /// <b>Descending, and it was ascending until the strength enum flipped under it.</b> When
+    /// <see cref="SignalStrength"/> descended from <c>Conclusive = 0</c>, a plain <c>ThenBy</c> put
+    /// the strongest signal first and this summary was true. The commit that made the enum ascend -
+    /// the one that added the warning about two opposite conventions being a trap - moved two of the
+    /// three comparisons that depended on the old order and missed this one, so the sort silently
+    /// inverted and <see cref="Summary"/>, which takes the first decisive observation as its
+    /// printed basis, began attributing a high-confidence verdict to its weakest witness. The trap
+    /// was sprung in the same diff that named it.
+    /// </remarks>
     private static IReadOnlyList<TopologyObservation> Ordered(IEnumerable<TopologyObservation> all) =>
         [.. all
             .OrderBy(o => o.Finding == TopologyFinding.Inconclusive ? 1 : 0)
-            .ThenBy(o => o.Strength)
+            .ThenByDescending(o => o.Strength)
             .ThenBy(o => o.Signal)];
 }
