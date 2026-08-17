@@ -179,7 +179,7 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var outcome = await _configurator.RestoreAllAsync();
+            var outcome = await _configurator.RestoreAsync(RestoreScope.Everything);
 
             if (outcome.NothingToDo)
             {

@@ -101,8 +101,11 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
             .ConfigureAwait(false);
     }
 
-    public async Task<RestoreOutcome> RestoreAllAsync(CancellationToken cancellationToken = default)
+    public async Task<RestoreOutcome> RestoreAsync(
+        RestoreScope scope, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(scope);
+
         var pending = await _journal.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
 
         if (pending.IsEmpty)
@@ -115,7 +118,11 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         // one torn write would otherwise turn the journal into something that silently swallows
         // the rest of the run. Discard it and say so - adapters may still be altered, and only
         // the user can check now.
-        if (pending.IsUnreadable)
+        //
+        // A full pass only. Discarding is a recovery action taken when nothing in the journal can
+        // be acted on; a probe putting one property back has no business throwing away records it
+        // cannot read and did not write.
+        if (pending.IsUnreadable && scope.IsEverything)
         {
             await _journal.DiscardAsync(cancellationToken).ConfigureAwait(false);
 
@@ -138,7 +145,7 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         var propertiesByAdapter = new Dictionary<string, IReadOnlyList<AdapterProperty>>(
             StringComparer.OrdinalIgnoreCase);
 
-        foreach (var entry in OriginalValues(pending.Entries))
+        foreach (var entry in OriginalValues(pending.Entries).Where(scope.Includes))
         {
             try
             {

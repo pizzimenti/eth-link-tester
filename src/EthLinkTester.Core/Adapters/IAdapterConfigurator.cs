@@ -51,11 +51,17 @@ public interface IAdapterConfigurator
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Puts every journaled property back and clears the journal.
+    /// Puts journaled properties back, and removes only what it put back.
     /// </summary>
+    /// <param name="scope">
+    /// Which entries this pass may touch. <see cref="RestoreScope.Everything"/> at startup and at
+    /// end of run; a narrower scope for anything undoing its own change inside a run that is still
+    /// going - see <see cref="RestoreScope"/> for why that distinction is load-bearing.
+    /// </param>
     /// <remarks>
     /// Safe to call at startup with no run in progress: a non-empty journal then is proof that a
     /// previous run died without cleaning up, and this is the recovery path.
     /// </remarks>
-    Task<RestoreOutcome> RestoreAllAsync(CancellationToken cancellationToken = default);
+    Task<RestoreOutcome> RestoreAsync(
+        RestoreScope scope, CancellationToken cancellationToken = default);
 }
