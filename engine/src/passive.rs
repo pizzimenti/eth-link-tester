@@ -49,11 +49,27 @@ pub const CDP: &str = "ether[12:2] <= 1500 and ether[14:2] = 0xaaaa \
                        and ether[16:4] = 0x0300000c and ether[20:2] = 0x2000";
 
 /// All three in one capture.
-pub const ALL: &str = "ether proto 0x88cc or (ether[12:2] <= 1500 and (ether[14:2] = 0x4242 \
-                       or (ether[14:2] = 0xaaaa and ether[16:4] = 0x0300000c \
-                       and ether[20:2] = 0x2000)))";
+///
+/// **Built from the three constants rather than re-typed.** It used to be a fourth hand-factored
+/// expression restating all of them, in a module whose entire subject is that a BPF filter can
+/// compile cleanly and match nothing - so a fix to one sub-filter that missed this copy would
+/// reproduce the module's own documented worst failure, and look exactly like a quiet link. The
+/// factoring the hand-written version had is not lost: libpcap's optimiser recovers it, and the
+/// two forms were confirmed to behave identically on every frame in
+/// [`the_combined_filter_matches_all_three_and_nothing_else`].
+///
+/// **Deliberately the plain [`LLDP`], not [`LLDP_TAGGED`], so tagged LLDP is invisible here.** That
+/// is a trade rather than an oversight, and it is not a small one: libpcap's `vlan` keyword is not
+/// a predicate but a compile-time offset shift applied to every term that follows it, and
+/// parentheses do not reliably contain it - so a tagged term in front of [`STP`] and [`CDP`] moves
+/// their absolute `ether[12:2]` reads four bytes along and silently breaks both. A separate listen
+/// with [`LLDP_TAGGED`] is the way to cover tagged frames; folding it in here would trade two
+/// working protocol filters for one.
+pub fn all() -> String {
+    format!("({LLDP}) or ({STP}) or ({CDP})")
+}
 
-/// [`ALL`], with this machine's own adapters excluded.
+/// [`all`], with this machine's own adapters excluded.
 ///
 /// **Required, not an optimisation.** Npcap hands a capture handle the frames the host itself
 /// transmits on that adapter - verified on this rig, where an injected frame came straight back on
@@ -64,11 +80,23 @@ pub const ALL: &str = "ether proto 0x88cc or (ether[12:2] <= 1500 and (ether[14:
 /// "Setting direction is not supported on this device" for all three values, verified on a live
 /// Ethernet handle. Source-MAC exclusion is the only mechanism available.
 ///
-/// This matters beyond stray broadcasts. Windows can originate LLDP itself when Data Center
-/// Bridging is installed, and several vendor NIC suites ship their own LLDP agents - in which case
-/// the host becomes a false positive for "a switch is present" unless its own frames are excluded.
+/// This matters beyond stray broadcasts. Windows can originate LLDP itself, and several vendor NIC
+/// suites ship their own LLDP agents - in which case the host becomes a false positive for "a
+/// switch is present" unless its own frames are excluded.
+///
+/// **How real that is on this rig, measured rather than assumed:** `ms_lldp`, the Microsoft LLDP
+/// Protocol Driver, is bound and *enabled* on both reference adapters - and forty seconds of
+/// listening with no exclusion at all, against an LLDP interval of thirty, heard nothing on either.
+/// An enabled binding is not a transmitting agent; Windows' `mslldp.sys` is there principally to
+/// receive. So the exclusion is defence against a class of host this rig is not a member of, which
+/// is a reason to keep it and not a reason to call it load-bearing here. Worth knowing when a
+/// listen on someone else's machine does hear something.
 pub fn all_excluding_self(macs: &[[u8; 6]]) -> String {
-    let mut filter = String::from(ALL);
+    // Parenthesised, so the exclusions apply to the whole set rather than resting on libpcap giving
+    // `and` and `or` equal precedence and left associativity. They do, and the unparenthesised form
+    // was verified correct - but the correctness of a filter that rejects everyone's frames and one
+    // that rejects nobody's look identical from here, so it is not a thing to leave to precedence.
+    let mut filter = format!("({})", all());
 
     for mac in macs {
         filter.push_str(" and not ether src ");
@@ -114,6 +142,240 @@ const _: () = assert!(
 mod tests {
     use super::*;
 
+    /// Ethernet frames built by hand, so a filter can be run against known contents.
+    ///
+    /// Substring assertions cannot see the failure this module exists to prevent. `ether proto
+    /// 0x2000` contains "0x2000" and matches no CDP frame that has ever existed; a combined filter
+    /// can contain all three protocol constants and still match none of them after a regrouping.
+    /// The only test that distinguishes a working filter from a plausible one is running it, so
+    /// these tests compile each filter and push frames through it.
+    mod frames {
+        pub const SELF_MAC: [u8; 6] = [0x18, 0xDB, 0xF2, 0x4D, 0xBB, 0xEE];
+        pub const OTHER_MAC: [u8; 6] = [0x00, 0xE0, 0x4C, 0x68, 0x06, 0xCA];
+
+        /// Destination, source, then whatever distinguishes the protocol, padded to 60 bytes.
+        fn frame(source: [u8; 6], tail: &[u8]) -> Vec<u8> {
+            let mut bytes = vec![0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E];
+            bytes.extend_from_slice(&source);
+            bytes.extend_from_slice(tail);
+            bytes.resize(60, 0);
+            bytes
+        }
+
+        pub fn lldp(source: [u8; 6]) -> Vec<u8> {
+            frame(source, &[0x88, 0xCC])
+        }
+
+        /// An 802.1Q tag shifts the EtherType four bytes along, which is the whole difficulty.
+        pub fn tagged_lldp(source: [u8; 6]) -> Vec<u8> {
+            frame(source, &[0x81, 0x00, 0x00, 0x64, 0x88, 0xCC])
+        }
+
+        /// 802.3 length, then LLC DSAP and SSAP of 0x42.
+        pub fn stp(source: [u8; 6]) -> Vec<u8> {
+            frame(source, &[0x00, 0x26, 0x42, 0x42, 0x03])
+        }
+
+        /// 802.3 length, LLC/SNAP, Cisco OUI, protocol id 0x2000.
+        pub fn cdp(source: [u8; 6]) -> Vec<u8> {
+            frame(
+                source,
+                &[0x00, 0x26, 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x0C, 0x20, 0x00],
+            )
+        }
+
+        pub fn ipv4(source: [u8; 6]) -> Vec<u8> {
+            frame(source, &[0x08, 0x00, 0x45, 0x00])
+        }
+    }
+
+    /// Whether libpcap can be reached at all, reported rather than silently assumed.
+    ///
+    /// These tests need libpcap's own compiler and matcher - a reimplementation would be testing
+    /// the reimplementation - and that means `wpcap.dll`, which Npcap's licence forbids
+    /// redistributing and which CI therefore does not have. They run on any machine with Npcap
+    /// installed, which is every machine that can run this tool at all, and print why when they do
+    /// not. A quiet skip in a module about filters that fail quietly would be its own joke.
+    fn libpcap_available() -> bool {
+        if crate::diag::ensure_npcap() {
+            return true;
+        }
+
+        eprintln!(
+            "SKIPPED: Npcap is not installed, so libpcap's filter compiler cannot be reached. \
+             These assertions run wherever the tool itself can run."
+        );
+        false
+    }
+
+    /// Runs `filter` over `packets` and returns how many it matched.
+    ///
+    /// Through a capture file rather than a live device, so the assertions hold with no NIC, no
+    /// cable and no capture privileges - but through libpcap's real compiler and real matcher,
+    /// which is the part that has to be right.
+    fn matches(filter: &str, packets: &[Vec<u8>]) -> usize {
+        // A counter, not a hash of the contents. Two tests that happen to run the same filter over
+        // the same number of frames are not unusual here, the harness runs them concurrently, and
+        // one clobbering the other's file surfaces as a truncated capture - which reads exactly
+        // like a filter defect and is not one.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        let path = std::env::temp_dir().join(format!(
+            "ethlink-filter-{}-{}.pcap",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+
+        {
+            let dead = pcap::Capture::dead(pcap::Linktype::ETHERNET).expect("dead capture");
+            let mut savefile = dead.savefile(&path).expect("savefile");
+
+            for packet in packets {
+                // Zeroed rather than built from a libc::timeval, which would mean taking a
+                // dependency on libc to write a timestamp no filter here reads. Every field is an
+                // integer, so a zeroed PacketHeader is a valid one.
+                let mut header: pcap::PacketHeader = unsafe { std::mem::zeroed() };
+                header.caplen = packet.len() as u32;
+                header.len = packet.len() as u32;
+
+                savefile.write(&pcap::Packet::new(&header, packet));
+            }
+        }
+
+        let mut capture = pcap::Capture::from_file(&path).expect("reopen");
+        capture
+            .filter(filter, true)
+            .unwrap_or_else(|e| panic!("filter did not compile: {filter}\n{e}"));
+
+        let mut matched = 0;
+        while capture.next_packet().is_ok() {
+            matched += 1;
+        }
+
+        let _ = std::fs::remove_file(&path);
+        matched
+    }
+
+    fn one_of_each(source: [u8; 6]) -> Vec<Vec<u8>> {
+        vec![
+            frames::lldp(source),
+            frames::tagged_lldp(source),
+            frames::stp(source),
+            frames::cdp(source),
+            frames::ipv4(source),
+        ]
+    }
+
+    /// Each protocol filter matches its own protocol and nothing else in the set.
+    #[test]
+    fn every_filter_matches_exactly_its_own_protocol() {
+        if !libpcap_available() {
+            return;
+        }
+
+        let packets = one_of_each(frames::OTHER_MAC);
+
+        assert_eq!(matches(LLDP, &packets), 1, "LLDP");
+        assert_eq!(matches(STP, &packets), 1, "STP");
+        assert_eq!(matches(CDP, &packets), 1, "CDP");
+    }
+
+    /// The two spellings that compile and match nothing, proven by running them.
+    ///
+    /// This is the module's whole reason for existing, and until now it was asserted by checking
+    /// that the constants did not *contain* the bad spellings - which says nothing about whether
+    /// what they do contain works.
+    #[test]
+    fn the_wrong_spellings_compile_and_match_nothing() {
+        if !libpcap_available() {
+            return;
+        }
+
+        let packets = one_of_each(frames::OTHER_MAC);
+
+        assert_eq!(
+            matches("ether proto 0x2000", &packets),
+            0,
+            "CDP is LLC/SNAP, so ether[12:2] holds a length and can never equal 0x2000"
+        );
+        assert_eq!(matches(CDP, &packets), 1, "and the SNAP form does match it");
+    }
+
+    /// The plain LLDP filter misses tagged LLDP, and the tagged one catches both.
+    #[test]
+    fn a_vlan_tag_hides_lldp_from_the_plain_filter() {
+        if !libpcap_available() {
+            return;
+        }
+
+        let tagged = vec![frames::tagged_lldp(frames::OTHER_MAC)];
+        let both = vec![
+            frames::lldp(frames::OTHER_MAC),
+            frames::tagged_lldp(frames::OTHER_MAC),
+        ];
+
+        assert_eq!(matches(LLDP, &tagged), 0);
+        assert_eq!(matches(LLDP_TAGGED, &both), 2);
+    }
+
+    /// The combined filter catches all three protocols and nothing else.
+    #[test]
+    fn the_combined_filter_matches_all_three_and_nothing_else() {
+        if !libpcap_available() {
+            return;
+        }
+
+        let packets = one_of_each(frames::OTHER_MAC);
+
+        // LLDP, STP and CDP; not the tagged LLDP and not the IPv4 frame.
+        assert_eq!(matches(&all(), &packets), 3);
+        assert_eq!(matches(&all(), &[frames::ipv4(frames::OTHER_MAC)]), 0);
+        assert_eq!(matches(&all(), &[frames::tagged_lldp(frames::OTHER_MAC)]), 0);
+    }
+
+    /// Building it from the constants did not change what it matches.
+    ///
+    /// The hand-factored expression this replaced was correct; the finding was that it was a fourth
+    /// copy nothing compared against the other three. This keeps the old form as a fixture so the
+    /// replacement is a refactor and can be seen to be one.
+    #[test]
+    fn the_combined_filter_agrees_with_the_hand_factored_form() {
+        if !libpcap_available() {
+            return;
+        }
+
+        const HAND_FACTORED: &str = "ether proto 0x88cc or (ether[12:2] <= 1500 \
+                                     and (ether[14:2] = 0x4242 or (ether[14:2] = 0xaaaa \
+                                     and ether[16:4] = 0x0300000c and ether[20:2] = 0x2000)))";
+
+        let packets = [one_of_each(frames::SELF_MAC), one_of_each(frames::OTHER_MAC)].concat();
+
+        assert_eq!(matches(&all(), &packets), matches(HAND_FACTORED, &packets));
+    }
+
+    /// Self-exclusion removes this host's frames and keeps everyone else's.
+    ///
+    /// Load-bearing rather than tidy: Npcap hands a capture handle the frames the host itself
+    /// transmits on that adapter, and Windows ships an LLDP agent enabled by default - so without
+    /// this the host reads as a device on its own segment.
+    #[test]
+    fn self_exclusion_drops_this_hosts_frames_and_keeps_the_rest() {
+        if !libpcap_available() {
+            return;
+        }
+
+        let packets = [one_of_each(frames::SELF_MAC), one_of_each(frames::OTHER_MAC)].concat();
+        let filter = all_excluding_self(&[frames::SELF_MAC]);
+
+        assert_eq!(matches(&all(), &packets), 6, "three protocols from each host");
+        assert_eq!(matches(&filter, &packets), 3, "only the other host's");
+        assert_eq!(
+            matches(&all_excluding_self(&[frames::SELF_MAC, frames::OTHER_MAC]), &packets),
+            0,
+            "excluding both hosts leaves nothing"
+        );
+    }
+
     /// The two spellings that compile and never match. Pinned as strings because the defect is
     /// invisible at runtime - a filter that matches nothing looks exactly like a quiet link.
     #[test]
@@ -142,26 +404,21 @@ mod tests {
     }
 
     #[test]
-    fn the_combined_filter_covers_all_three() {
-        assert!(ALL.contains("0x88cc"), "LLDP");
-        assert!(ALL.contains("0x4242"), "STP");
-        assert!(ALL.contains("0x2000"), "CDP");
-    }
-
-    #[test]
     fn self_exclusion_names_every_adapter() {
-        let filter = all_excluding_self(&[
-            [0x18, 0xDB, 0xF2, 0x4D, 0xBB, 0xEE],
-            [0x00, 0xE0, 0x4C, 0x68, 0x06, 0xCA],
-        ]);
+        let filter = all_excluding_self(&[frames::SELF_MAC, frames::OTHER_MAC]);
 
         assert!(filter.contains("not ether src 18:db:f2:4d:bb:ee"));
         assert!(filter.contains("not ether src 00:e0:4c:68:06:ca"));
-        assert!(filter.starts_with(ALL));
     }
 
     #[test]
-    fn self_exclusion_with_no_adapters_is_the_plain_filter() {
-        assert_eq!(all_excluding_self(&[]), ALL);
+    fn self_exclusion_with_no_adapters_matches_the_same_frames() {
+        if !libpcap_available() {
+            return;
+        }
+
+        let packets = one_of_each(frames::SELF_MAC);
+
+        assert_eq!(matches(&all_excluding_self(&[]), &packets), matches(&all(), &packets));
     }
 }
