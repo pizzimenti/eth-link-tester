@@ -1,7 +1,7 @@
 namespace EthLinkTester.Core.Topology;
 
 /// <summary>
-/// The five things this app can look at to decide whether a switch sits in the link.
+/// What this app can look at to decide whether a switch sits in the link.
 /// </summary>
 /// <remarks>
 /// Named individually rather than folded into a score, because a report has to say which signals
@@ -86,8 +86,19 @@ public enum TopologySignal
     /// asymmetry is the whole mechanism.
     /// </para>
     /// <para>
+    /// <b>The far end's duplex is read as well as its speed, and it decides the answer.</b> With
+    /// auto-negotiation off the forced PHY stops emitting fast link pulses, so a partner cannot
+    /// negotiate and falls back to parallel detection - which conveys speed but not duplex and so
+    /// comes up half. A far end at 100 half is therefore the signature of a direct connection to a
+    /// silent PHY; a far end at 100 <i>full</i> agreed that duplex with something still sending
+    /// pulses, which the forced adapter was not. Without the duplex read those two are the same
+    /// reading, which is why this signal used to concede a 100 Mbps switch as an unavoidable alias.
+    /// </para>
+    /// <para>
     /// Disruptive - it bounces the link and needs the restore journal to put the setting back, so
-    /// it is opt-in like <see cref="LinkStateCoupling"/>.
+    /// it is opt-in like <see cref="LinkStateCoupling"/>. It can also take the link down outright
+    /// on a direct pair: automatic MDI/MDI-X crossover is driven by link pulses, and many PHYs
+    /// disable it when auto-negotiation is off.
     /// </para>
     /// </remarks>
     ForcedSpeedAsymmetry,

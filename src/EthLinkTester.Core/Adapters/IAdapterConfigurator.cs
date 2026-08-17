@@ -21,9 +21,12 @@ public interface IAdapterConfigurator
     /// </summary>
     /// <remarks>
     /// A write that would not change anything is skipped entirely rather than journaled, so a
-    /// no-op cannot leave a restore entry behind that outlives the run.
+    /// no-op cannot leave a restore entry behind that outlives the run. The return value says which
+    /// of the two happened, because a caller that interprets the resulting adapter state as
+    /// evidence needs to know whether this call produced it - see
+    /// <see cref="ConfigurationOutcome"/>.
     /// </remarks>
-    Task ApplyAsync(
+    Task<ConfigurationOutcome> ApplyAsync(
         NetworkAdapterInfo adapter,
         string keyword,
         string registryValue,
@@ -32,12 +35,17 @@ public interface IAdapterConfigurator
     /// <summary>
     /// Forces a speed and duplex, resolving it to whatever registry value this driver uses.
     /// </summary>
+    /// <returns>
+    /// Whether the setting was changed or already held the requested value.
+    /// <see cref="ConfigurationOutcome.AlreadyAtTarget"/> from a probe's own force is a warning:
+    /// the adapter was pinned before this run touched it.
+    /// </returns>
     /// <exception cref="InvalidOperationException">
     /// Thrown when the driver does not offer the setting. Note that 1000BASE-T and above are
     /// never genuinely forceable - see <see cref="SpeedDuplex.IsTrulyForceable"/> - so a driver
     /// offering them is restricting advertised capability, not pinning the link.
     /// </exception>
-    Task ForceSpeedAsync(
+    Task<ConfigurationOutcome> ForceSpeedAsync(
         NetworkAdapterInfo adapter,
         SpeedDuplex setting,
         CancellationToken cancellationToken = default);

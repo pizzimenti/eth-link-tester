@@ -33,7 +33,7 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         string adapterId, CancellationToken cancellationToken = default) =>
         _writer.ReadPropertiesAsync(adapterId, cancellationToken);
 
-    public async Task ApplyAsync(
+    public async Task<ConfigurationOutcome> ApplyAsync(
         NetworkAdapterInfo adapter,
         string keyword,
         string registryValue,
@@ -55,10 +55,12 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
         // A write that changes nothing still leaves a journal entry behind, and that entry would
         // outlive the run and be "restored" on a later launch - reporting a recovery that never
-        // needed to happen.
+        // needed to happen. Reported rather than swallowed: this is the only place that knows the
+        // adapter was already in the requested state, and a probe that reads the resulting state as
+        // evidence has to know that this run did not produce it.
         if (string.Equals(property.RegistryValue, registryValue, StringComparison.Ordinal))
         {
-            return;
+            return ConfigurationOutcome.AlreadyAtTarget;
         }
 
         await _journal.RecordAsync(
@@ -75,9 +77,11 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
         await _writer.WriteAsync(adapter.Id, property.Keyword, registryValue, cancellationToken)
             .ConfigureAwait(false);
+
+        return ConfigurationOutcome.Applied;
     }
 
-    public async Task ForceSpeedAsync(
+    public async Task<ConfigurationOutcome> ForceSpeedAsync(
         NetworkAdapterInfo adapter,
         SpeedDuplex setting,
         CancellationToken cancellationToken = default)
@@ -92,7 +96,8 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
                 $"'{adapter.Name}' does not offer {setting}. " +
                 $"Available: {string.Join(", ", property.Options.Select(o => o.DisplayValue))}.");
 
-        await ApplyAsync(adapter, WellKnownKeywords.SpeedDuplex, registryValue, cancellationToken)
+        return await ApplyAsync(
+                adapter, WellKnownKeywords.SpeedDuplex, registryValue, cancellationToken)
             .ConfigureAwait(false);
     }
 

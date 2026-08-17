@@ -485,4 +485,47 @@ public class GuardedAdapterConfiguratorTests
         Assert.False(rig.Cleared);
     }
 
+    /// <summary>
+    /// A write that changed something says so, and one that found the value already there says
+    /// that instead.
+    /// </summary>
+    /// <remarks>
+    /// This configurator is the only component that knows the difference - it is the thing that
+    /// decides to skip the write - and it used to return a bare <c>Task</c> and discard the fact.
+    /// <see cref="Topology.ForcedSpeedAsymmetrySignal"/> requires exactly this fact to avoid
+    /// interpreting an adapter state a dead run left behind, so with it unavailable there was no
+    /// correct code to write against this interface.
+    /// </remarks>
+    [Fact]
+    public async Task AWriteReportsWhetherItChangedAnything()
+    {
+        var (rig, configurator) = Build();
+
+        var applied = await configurator.ForceSpeedAsync(
+            Adapter(), SpeedDuplex.Full(LinkSpeed.Mbps100));
+
+        Assert.Equal(ConfigurationOutcome.Applied, applied);
+        Assert.Equal("4", rig.Values[Keyword]);
+
+        var second = await configurator.ForceSpeedAsync(
+            Adapter(), SpeedDuplex.Full(LinkSpeed.Mbps100));
+
+        Assert.Equal(ConfigurationOutcome.AlreadyAtTarget, second);
+    }
+
+    /// <summary>
+    /// And the outcome tracks the journal: the skipped write leaves no second entry behind, so
+    /// "nothing was applied" and "nothing was recorded" stay the same statement.
+    /// </summary>
+    [Fact]
+    public async Task AnAlreadyAtTargetWriteJournalsNothingFurther()
+    {
+        var (rig, configurator) = Build();
+
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+
+        Assert.Single(rig.Entries);
+        Assert.Equal("0", rig.Entries[0].OriginalValue);
+    }
 }
