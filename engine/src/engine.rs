@@ -204,7 +204,30 @@ const NO_LATENCY: (f64, f64) = (0.0, 0.0);
 struct Counters {
     tx_frames: AtomicU64,
     tx_bytes: AtomicU64,
-    /// Frames the kernel filter matched. Authoritative even when userspace cannot keep up.
+    /// This run's frames that reached the receiving adapter: handed to the capture loop, plus the
+    /// ones the kernel matched and the buffer then lost.
+    ///
+    /// **Not `ps_recv`, which is what this used to be, and which does not mean what the name
+    /// suggests on this platform.** libpcap's `pcap_stats` documents `ps_recv` as platform-defined;
+    /// the Npcap maintainers' definitive answer is that it counts "all packets on the interface
+    /// that the Npcap driver has seen while this handle was open" - before the filter, everything on
+    /// the wire. The filter-matched-and-delivered counter is `ps_capt`, which lives only in
+    /// `pcap_stats_ex` and is not bound by the pcap crate at any version through 2.5.0.
+    ///
+    /// So the run-id filter protected the latency path, where `parse` gates every sample, and not
+    /// the delivery count - the number this tool exists to publish. Every frame arriving at the RX
+    /// adapter was credited as one of this run's, at this run's frame size: Windows chatter from
+    /// both stacks, an STP hello every two seconds in exactly the switched topologies Phase 4 goes
+    /// looking for, and worst of all a second overlapping run's traffic, which is the scenario the
+    /// run id exists to prevent and which this counter reintroduced underneath it. The error was
+    /// always flattering - delivery overstated, loss understated, receive throughput inflated.
+    ///
+    /// Both halves of the replacement are well-defined on Npcap. Frames delivered to the loop are
+    /// counted where they arrive, after the kernel filter. `ps_drop` really is filter-scoped, so
+    /// adding it keeps the property the old comment claimed: a frame the kernel matched still
+    /// counts as delivered to the adapter even when userspace could not keep up with it, because
+    /// reaching the NIC is what "received" means here and losing it afterwards is our shortfall,
+    /// not the cable's.
     rx_frames: AtomicU64,
     /// Frames the kernel matched but the capture buffer lost. Not cable loss - our own shortfall.
     rx_capture_drops: AtomicU64,
@@ -443,11 +466,19 @@ fn spawn_rx(
         guard(&counters, || {
             let mut local = LatencyHistogram::new();
             let mut since_publish = Instant::now();
-            let (mut last_received, mut last_dropped) = (0u32, 0u32);
+            let mut last_dropped = 0u32;
+            // Counted here rather than read back from pcap, and folded into the shared total on the
+            // publish tick. Every packet reaching this arm has already passed the kernel's run-id
+            // filter, so this is the kernel's own judgement of what belongs to this run - which is
+            // what `ps_recv` was wrongly assumed to report. Local because a relaxed atomic add at a
+            // million frames a second is a cost the measurement does not need to carry.
+            let mut delivered = 0u64;
 
             while running.load(Ordering::Acquire) {
                 match capture.next_packet() {
                     Ok(packet) => {
+                        delivered += 1;
+
                         // Untimed frames still arrive and are still counted by the kernel filter;
                         // they simply carry no send time to subtract. Treating their zero as a
                         // timestamp would report a flood of zero-microsecond arrivals and drag
@@ -478,25 +509,8 @@ fn spawn_rx(
                 // Statistics and the histogram are published on a timer rather than per frame:
                 // taking a lock at a million frames a second would cost more than the measurement.
                 if since_publish.elapsed() >= SAMPLE_INTERVAL {
-                    if let Ok(stats) = capture.stats() {
-                        // Accumulated as wrapping 32-bit deltas, not widened as though each
-                        // snapshot were a 64-bit lifetime total. pcap's counters are 32 bits and
-                        // wrap: at 10 Gb/s with 64-byte frames that is roughly every five minutes,
-                        // and storing the raw snapshot would drop the receive count by 4.3 billion
-                        // at each wrap - throughput reading zero for a window and delivery ratios
-                        // corrupted for the rest of the run. A soak is exactly when this bites.
-                        counters.rx_frames.fetch_add(
-                            u64::from(stats.received.wrapping_sub(last_received)),
-                            Ordering::Relaxed,
-                        );
-                        counters.rx_capture_drops.fetch_add(
-                            u64::from(stats.dropped.wrapping_sub(last_dropped)),
-                            Ordering::Relaxed,
-                        );
+                    fold_receive(&mut capture, &counters, &mut delivered, &mut last_dropped);
 
-                        last_received = stats.received;
-                        last_dropped = stats.dropped;
-                    }
                     // Merged rather than replaced, because the sampler clears the shared histogram
                     // when it takes a window and a wholesale copy would resurrect what it cleared.
                     if let Ok(mut shared) = latency.lock() {
@@ -506,8 +520,45 @@ fn spawn_rx(
                     since_publish = Instant::now();
                 }
             }
+
+            // Once more on the way out. The loop exits on a stop or a capture error, either of
+            // which can land mid-window, and the frames counted since the last tick are as real as
+            // any others - dropping them would charge a partial window to loss, which is the same
+            // shape of error `stop_transmit` exists to prevent at the other end of the run.
+            fold_receive(&mut capture, &counters, &mut delivered, &mut last_dropped);
         })
     }))
+}
+
+/// Folds one window's receive counts into the shared totals.
+///
+/// The drop delta is accumulated as a wrapping 32-bit difference rather than widened as though each
+/// snapshot were a 64-bit lifetime total. pcap's counters are 32 bits and wrap: at 10 Gb/s with
+/// 64-byte frames that is roughly every five minutes, and storing the raw snapshot would drop the
+/// count by 4.3 billion at each wrap - throughput reading zero for a window and delivery ratios
+/// corrupted for the rest of the run. A soak is exactly when this bites.
+fn fold_receive(
+    capture: &mut pcap::Capture<pcap::Active>,
+    counters: &Counters,
+    delivered: &mut u64,
+    last_dropped: &mut u32,
+) {
+    let mut received = std::mem::take(delivered);
+
+    if let Ok(stats) = capture.stats() {
+        let dropped = stats.dropped.wrapping_sub(*last_dropped);
+        *last_dropped = stats.dropped;
+
+        counters
+            .rx_capture_drops
+            .fetch_add(u64::from(dropped), Ordering::Relaxed);
+
+        // A frame the kernel matched and the buffer then lost still reached the adapter, so it is
+        // a delivery. Counting it as loss would blame the cable for our own backlog.
+        received += u64::from(dropped);
+    }
+
+    counters.rx_frames.fetch_add(received, Ordering::Relaxed);
 }
 
 fn spawn_tx(
