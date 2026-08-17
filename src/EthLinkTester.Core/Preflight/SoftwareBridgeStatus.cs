@@ -85,9 +85,126 @@ public sealed record SoftwareBridgeStatus(
     string? ComponentId,
     string Detail)
 {
+    /// <summary>Hyper-V's extensible virtual switch. Frames traverse <c>vmswitch.sys</c>.</summary>
+    public const string HyperVSwitchComponent = "vms_pp";
+
+    /// <summary>The Windows Network Bridge, two clicks away in Network Connections.</summary>
+    public const string NetworkBridgeComponent = "ms_bridge";
+
+    /// <summary>The LBFO teaming protocol - bound almost everywhere, meaningful rarely.</summary>
+    public const string TeamingComponent = "ms_implat";
+
+    /// <summary>
+    /// Protocol bindings known not to move frames off the wire.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An allow-list rather than a list of things to catch, because enumerating every vendor's
+    /// teaming and bridging component is a losing game and the whole point of the unrecognised
+    /// category is to notice the next one. Everything here was observed on the reference machine or
+    /// is a documented Microsoft transport.
+    /// </para>
+    /// <para>
+    /// Being wrong here costs a caveat on a report and never a refusal, which is the right way for
+    /// this list to fail: a stale allow-list mentions something harmless, where a stale catch-list
+    /// misses something that matters.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlySet<string> BenignTransports =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ms_tcpip",
+            "ms_tcpip6",
+            "ms_lldp",
+            "ms_lltdio",
+            "ms_rspndr",
+            "ms_netbt",
+            "ms_netbios",
+            "ms_pppoe",
+            "ms_rdma_ndk",
+            "ms_ndisuio",
+            "ms_ndiscap",
+        };
+
     /// <summary>Nothing found, which is the ordinary case.</summary>
     public static SoftwareBridgeStatus Clear(string adapterId) =>
         new(SoftwareBridge.None, adapterId, null, "No software bridge is stacked on this adapter.");
+
+    /// <summary>
+    /// Decides what a set of bindings means.
+    /// </summary>
+    /// <param name="adapterId">The adapter they were read from.</param>
+    /// <param name="bindings">Every binding on that adapter, enabled or not.</param>
+    /// <param name="anyTeamExists">
+    /// Whether the machine has any LBFO team at all. The adapter-specific half of the teaming test
+    /// is <see cref="TeamingComponent"/> being <i>enabled</i> here; this is the corroboration,
+    /// because the binding is present and disabled on every adapter of the reference machine with
+    /// no team configured anywhere.
+    /// </param>
+    /// <remarks>
+    /// Ordered by consequence: the three conditions that make a measurement meaningless are checked
+    /// before the one that merely deserves a mention, so a Hyper-V switch is never reported as an
+    /// unrecognised protocol just because both are true.
+    /// </remarks>
+    public static SoftwareBridgeStatus From(
+        string adapterId, IReadOnlyList<AdapterBinding> bindings, bool anyTeamExists)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(adapterId);
+        ArgumentNullException.ThrowIfNull(bindings);
+
+        var enabled = bindings.Where(b => b.Enabled).ToList();
+
+        if (enabled.Any(b => b.Is(HyperVSwitchComponent)))
+        {
+            return new SoftwareBridgeStatus(
+                SoftwareBridge.HyperVSwitch,
+                adapterId,
+                HyperVSwitchComponent,
+                "This adapter is bound to a Hyper-V virtual switch, so its frames traverse "
+                + "vmswitch.sys rather than going straight to the PHY. Nothing measured through it "
+                + "describes a cable. Remove the adapter from the switch, or test a different one.");
+        }
+
+        if (enabled.Any(b => b.Is(NetworkBridgeComponent)))
+        {
+            return new SoftwareBridgeStatus(
+                SoftwareBridge.WindowsNetworkBridge,
+                adapterId,
+                NetworkBridgeComponent,
+                "This adapter is a member of a Windows Network Bridge. If both test adapters are "
+                + "members they are one segment in software, and the topology sweep would describe "
+                + "the bridge rather than the wire. Remove the bridge from Network Connections.");
+        }
+
+        if (anyTeamExists && enabled.Any(b => b.Is(TeamingComponent)))
+        {
+            return new SoftwareBridgeStatus(
+                SoftwareBridge.NetworkTeam,
+                adapterId,
+                TeamingComponent,
+                "This adapter is a member of a network team, so the team decides which physical "
+                + "port each frame leaves by and results cannot be attributed to either cable. "
+                + "Break the team, or test a port that is not in one.");
+        }
+
+        var unrecognised = enabled.FirstOrDefault(
+            b => b.IsEnabledTransport
+                 && !BenignTransports.Contains(b.ComponentId)
+                 && !b.Is(TeamingComponent));
+
+        if (unrecognised.ComponentId is { Length: > 0 } componentId)
+        {
+            return new SoftwareBridgeStatus(
+                SoftwareBridge.UnrecognisedProtocolBinding,
+                adapterId,
+                componentId,
+                $"An unrecognised protocol binding, '{componentId}', is enabled on this adapter. "
+                + "Vendor teaming and bridging components look like this, and so do plenty of "
+                + "harmless things. The run may proceed; the report will say it was there.");
+        }
+
+        return Clear(adapterId);
+    }
 
     /// <summary>
     /// True when a run on this adapter would measure something other than the cable, and must not
