@@ -46,10 +46,12 @@ requirements are met, not at a fixed patch number.
 ## Project layout
 
 ```
-src/EthLinkTester.Core   platform-neutral models, abstractions, orchestration, grading
-src/EthLinkTester.App    WinUI 3 shell
-tests/                   xunit
-engine/                  Rust packet engine (Phase 3)
+src/EthLinkTester.Core       platform-neutral models, abstractions, orchestration, grading
+src/EthLinkTester.Platform   the Windows half - CIM, NDIS properties, Npcap, the native engine host
+src/EthLinkTester.App        WinUI 3 shell
+tests/                       xunit
+engine/                      Rust packet engine (Phase 3) and its verification binaries
+tools/                       PowerShell harnesses that bracket a run with the NICs' own counters
 ```
 
 `Core` deliberately has **no Windows dependency** so it stays unit-testable without a desktop

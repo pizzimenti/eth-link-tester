@@ -28,9 +28,13 @@ and link retrains under sustained load.
 
 - **Link characterization** — time-to-link, downshift detection, master/slave resolution, MDI/MDI-X,
   pause capability, EEE state, forced 10/100 half and full duplex sweeps
-- **Topology detection** — whether a switch is sitting in the middle, using a reserved-multicast
-  probe that conforming 802.1D bridges are required *not* to forward, backed by passive LLDP/CDP/STP
-  observation and latency-vs-frame-size slope analysis
+- **Topology detection** — whether a switch is sitting in the middle. The strongest signal is a
+  deliberate asymmetry: force one port to 100 Mbps and see whether the other follows, since one
+  cable is one link and a switch terminates each segment separately. Corroborated by a
+  reserved-multicast sweep of the addresses IEEE 802.1Q says every relay component must filter, and
+  by passively listening for the LLDP, CDP and STP a managed device announces itself with. The
+  model is deliberately asymmetric — it reaches "bridged" readily and "direct" reluctantly, because
+  the second wrong answer silently contaminates every grade that follows it
 - **RFC 2544 frame sweep** — zero-loss throughput by binary search, latency distribution
   (p50/p99/p99.9, not mean), frame loss rate, back-to-back burst tolerance
 - **Soak testing** — sustained load watching error-counter deltas, link flaps, and PHY retrains.
@@ -46,10 +50,11 @@ your hardware can actually reach.
 
 The central claim — that Npcap injection reaches copper — is not taken on trust, and it is not
 taken on memory either. Every figure below is produced by a committed tool you can run yourself.
-`engine/src/bin/` holds four: `wirecheck` counts frames across the link, `txbench` finds the
-transmit ceiling, `enginerun` drives the whole engine, and `abicheck` calls the C ABI the way a
-buggy host would. `tools/` holds two more that bracket those runs with the NICs' **own hardware
-counters** — `Verify-Wire.ps1` and `Measure-Link.ps1`.
+`engine/src/bin/` holds six: `wirecheck` counts frames across the link, `txbench` finds the
+transmit ceiling, `enginerun` drives the whole engine, `abicheck` calls the C ABI the way a buggy
+host would, `topocheck` runs the reserved-multicast sweep, and `passivecheck` listens for the
+protocols a switch announces itself with. `tools/` holds two more that bracket those runs with the
+NICs' **own hardware counters** — `Verify-Wire.ps1` and `Measure-Link.ps1`.
 
 That split matters, because userspace cannot answer the question the project rests on. A frame
 handed back by a software bridge carries the same destination MAC as one that crossed a cable, so

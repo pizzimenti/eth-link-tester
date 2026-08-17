@@ -17,16 +17,25 @@
 //! accepted the batch, not when the wire has carried it, so the next probe can still be sitting
 //! behind the previous batch inside the NIC.
 //!
-//! Measured on the reference rig:
+//! Measured on the reference rig, on an idle host, Killer -> Realtek:
 //!
 //! | Frame | Throughput | p50 | p99 |
 //! |---|---|---|---|
-//! | 1518 B | 900 Mbps | 520 µs | 780 µs |
-//! | 64 B | 188 Mbps | 3,700 µs | 5,900 µs |
+//! | 1518 B | ~890 Mbps | ~490 µs | ~800 µs |
+//! | 64 B | not reproducible | | |
 //!
-//! The 64-byte figure is a property of the transmitting NIC rather than of the cable - the same
-//! conclusion `bin/txbench.rs` reached about small-frame throughput on this hardware - because the
-//! driver's byte-limited buffer holds far more small frames than large ones.
+//! **The 64-byte forward direction does not reproduce and no figure is published for it.** Across
+//! ten identical runs it varied between 49k and 255k frames/s and between 52% and 99.7% delivered,
+//! every missing frame matching the Realtek's own `ReceivedDiscardedPackets` count. This table
+//! carried `188 Mbps / 3,700 µs / 5,900 µs` for that row long after the README had withdrawn it,
+//! which is two documents in one repository disagreeing about the same measurement with the stale
+//! one facing the maintainer. The reverse direction does reproduce: 210k frames/s delivered,
+//! confirmed against both NICs' hardware counters.
+//!
+//! What the small-frame figures describe is the transmitting NIC rather than the cable - the same
+//! conclusion `bin/txbench.rs` reached - because the driver's byte-limited buffer holds far more
+//! small frames than large ones. Host load moves p99 by a factor of five and p50 barely at all, so
+//! a tail from this rig is a statement about scheduling until proven otherwise.
 //!
 //! **The probe costs about 3.5% of throughput at 1518 bytes** (900 Mbps against 934 with the probe
 //! inside the batch), because interleaving a single-frame send with a batched one leaves a bubble
@@ -88,11 +97,18 @@ const RATE_WINDOW_SAMPLES: usize = 30;
 /// leaves first (see [`frame::stamp`]) separates the two concerns, and lets this be sized for
 /// throughput alone.
 ///
-/// 4 ms also sets the latency sampling rate, because exactly one frame per batch is timed: 250
-/// batches a second is 125 timed arrivals per half-second window, which is enough to support a p99.
-/// One per 8 ms batch was not - windows held one sample or none, and the published p50 and p99 were
+/// 4 ms also sets the latency sampling rate, because exactly one frame per batch is timed. One per
+/// 8 ms batch was not enough - windows held one sample or none, and the published p50 and p99 were
 /// identical, which the histogram's own documentation calls the signature of a measurement that has
 /// stopped measuring.
+///
+/// The arithmetic that used to appear here - "250 batches a second is 125 timed arrivals per
+/// half-second window" - assumed the batch drains in its own wire time, and a batch only does that
+/// when the link is carrying it at line rate. At 64 bytes on this rig it does not: the measured
+/// 280k frames/s against 5,900 frames a batch is nearer 47 batches a second, so a half-second
+/// window holds two dozen samples rather than 125. Still enough for a p99 to mean something, and
+/// not what was claimed. The README has carried that correction since Phase 3 and this constant
+/// did not.
 const SEND_QUEUE_WIRE_TIME: Duration = Duration::from_millis(4);
 
 /// Assumed link rate when the caller does not know one. Gigabit is the floor this rig runs at.
