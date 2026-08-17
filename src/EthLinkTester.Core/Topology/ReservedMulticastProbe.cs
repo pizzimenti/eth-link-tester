@@ -27,9 +27,20 @@ public enum ProbeAddress
     /// <c>01:80:C2:00:00:02</c>, Slow Protocols. The discriminating probe.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Filtered by every 802.1Q relay component type, and specified as always-filtered and
     /// non-overridable in both Realtek generations read. If anything relays this, it is not an
-    /// 802.1 bridge at all.
+    /// 802.1 bridge at all. It is also the only member of the block that behaves the same across
+    /// every vendor whose datasheet was read - Broadcom drops all three probes, Realtek gigabit
+    /// silicon drops only this one - which is why it and nothing else decides.
+    /// </para>
+    /// <para>
+    /// One deliberate nonconformance, recorded where the address is defined rather than buried:
+    /// 802.3 Annex 57A.3 allocates this address "exclusively for use by Slow Protocols PDUs", so
+    /// sending anything else to it is out of spec. It is harmless - 57A.4 makes the Slow Protocols
+    /// demultiplexer EtherType-gated, so a conforming receiver hands a <c>0x88B5</c> frame to
+    /// nothing at all - but it is a rule this tool knowingly breaks and should own.
+    /// </para>
     /// </remarks>
     SlowProtocols,
 
@@ -83,6 +94,17 @@ public readonly record struct ProbeResult(ProbeAddress Address, bool Crossed);
 /// that requirement reliably enough to carry a verdict. What it is good at is the opposite job:
 /// when something *is* filtering, that is hard evidence, and the pattern of which addresses crossed
 /// is a fingerprint of the intervening device.
+/// </para>
+/// <para>
+/// <b>That asymmetry is in the strengths, and it has to be.</b> Filtered returns
+/// <see cref="SignalStrength.Strong"/>; crossed returns <see cref="SignalStrength.Suggestive"/>.
+/// The two branches used to return Strong alike, three lines apart, under a comment saying crossing
+/// was the weaker of the two - and since <see cref="TopologyVerdict.From"/> concludes Direct from
+/// any single Strong observation and <see cref="TopologyVerdict.GradingIsAttributable"/> unlocks at
+/// the confidence that produces, a sweep run on its own could license grading a cable through a
+/// media converter. Every prose statement in this file said the signal could not do that while the
+/// code let it. Suggestive is what "corroborating" means when written as a value: it lifts another
+/// signal's confidence and reaches no conclusion alone.
 /// </para>
 /// <para>
 /// Every frame goes out with EtherType <c>0x88B5</c> - IEEE 802a Local Experimental Ethertype 1,
@@ -139,23 +161,36 @@ public static class ReservedMulticastProbe
         // Crossing is weaker than being filtered, and deliberately so. Every 802.1 relay component
         // type filters this address, so a bridge that passes it is out of spec - but a media
         // converter, a PHY-level repeater and a passive tap are not relay components at all, and
-        // pass everything. "Nothing filtered it" is not "nothing is there".
+        // pass everything. "Nothing filtered it" is not "nothing is there", so this corroborates a
+        // direct link and cannot conclude one.
         return new TopologyObservation(
             TopologySignal.ReservedMulticastProbe,
             TopologyFinding.Direct,
-            SignalStrength.Strong,
-            "01:80:C2:00:00:02 crossed, which no conforming 802.1 relay component would allow. "
-            + $"A media converter or repeater would also pass it. {fingerprint}");
+            SignalStrength.Suggestive,
+            "01:80:C2:00:00:02 crossed, which no conforming 802.1 relay component would allow. A "
+            + "media converter, a PHY-level repeater or a passive tap would also pass it, so this "
+            + $"supports a direct link without establishing one. {fingerprint}");
     }
 
     /// <summary>
     /// Describes which addresses crossed, because the pattern identifies the device.
     /// </summary>
     /// <remarks>
-    /// Worth reporting even when the verdict is settled elsewhere. All sixteen crossing looks like
-    /// a cable; everything except <c>-01</c> and <c>-02</c> is the Realtek default strap; nothing
-    /// crossing is a conforming bridge. That is a more useful line in a report than a verdict on
-    /// its own, and it costs nothing extra to collect.
+    /// <para>
+    /// Worth reporting even when the verdict is settled elsewhere. All three reserved probes
+    /// crossing looks like a cable; <c>-04</c> and <c>-0E</c> crossing while <c>-02</c> is absorbed
+    /// is the Realtek gigabit default strap; nothing crossing is Broadcom-class silicon behaving
+    /// conformantly. That is a more useful line in a report than a verdict on its own, and it costs
+    /// nothing extra to collect.
+    /// </para>
+    /// <para>
+    /// Three, not sixteen. This remark used to describe a sweep of the whole
+    /// <c>01:80:C2:00:00:00</c>–<c>0F</c> block, which is what the plan proposed and not what was
+    /// built: <c>-00</c> is conformantly forwarded by S-VLAN and TPMR components, <c>-01</c> is
+    /// PAUSE and is consumed by essentially every receiving MAC, and both are excluded by
+    /// build-failing tests in <c>engine/src/topology.rs</c>. A reader sizing this at sixteen-way
+    /// identification would over-read what the pattern can say.
+    /// </para>
     /// </remarks>
     private static string Fingerprint(IReadOnlyList<ProbeResult> results)
     {

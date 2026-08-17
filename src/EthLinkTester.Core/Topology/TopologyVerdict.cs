@@ -89,9 +89,21 @@ public sealed record TopologyVerdict(
     /// Whether a cable grade derived from this run can honestly be attributed to the cable.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Only a confidently direct link earns this. Unknown does not, which is the point: a report
     /// that cannot say what it measured must not grade a cable, and the default answer is Unknown.
     /// Suite Mode should offer to re-run direct rather than grade anyway.
+    /// </para>
+    /// <para>
+    /// <b>The gate stays at Moderate; the work went into what may reach it.</b> The alternative was
+    /// to raise the bar to High, and that would have been the wrong repair: High is reserved for a
+    /// signal whose alternative is physically impossible, and every such signal in this set argues
+    /// for a <i>bridge</i>. Requiring it would make Direct unreachable and grading dead code. So the
+    /// two signals that can produce Direct were hardened instead - the multicast sweep demoted to
+    /// corroborating, and the forced-speed probe required to witness an actual transition - and
+    /// Moderate now means "one alias-hardened Strong signal, or two independent suggestive ones",
+    /// which is what the confidence documentation claimed all along.
+    /// </para>
     /// </remarks>
     public bool GradingIsAttributable =>
         Conclusion == TopologyConclusion.Direct && Confidence >= TopologyConfidence.Moderate;

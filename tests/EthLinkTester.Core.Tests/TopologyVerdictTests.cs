@@ -61,12 +61,22 @@ public class TopologyVerdictTests
         Assert.False(verdict.GradingIsAttributable);
     }
 
+    /// <summary>
+    /// The one place Direct is reachable, named deliberately.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TopologySignal.ForcedSpeedAsymmetry"/> and not
+    /// <see cref="TopologySignal.ReservedMulticastProbe"/>, which is what this test used to say. The
+    /// probe's crossed branch cannot produce Strong any more, so naming it here asserted a
+    /// combination the system cannot construct - and pinned the belief that a sweep alone may grade
+    /// a cable, which is the belief two other tests' docstrings deny.
+    /// </remarks>
     [Fact]
     public void StrongDirect_ConcludesDirect_AndPermitsGrading()
     {
         var verdict = TopologyVerdict.From(
         [
-            Says(TopologySignal.ReservedMulticastProbe, TopologyFinding.Direct, SignalStrength.Strong),
+            Says(TopologySignal.ForcedSpeedAsymmetry, TopologyFinding.Direct, SignalStrength.Strong),
         ]);
 
         Assert.Equal(TopologyConclusion.Direct, verdict.Conclusion);
@@ -84,7 +94,7 @@ public class TopologyVerdictTests
     {
         var verdict = TopologyVerdict.From(
         [
-            Says(TopologySignal.ReservedMulticastProbe, TopologyFinding.Direct, SignalStrength.Strong),
+            Says(TopologySignal.ForcedSpeedAsymmetry, TopologyFinding.Direct, SignalStrength.Strong),
             Says(TopologySignal.BridgeProtocolTraffic, TopologyFinding.Bridged, SignalStrength.Suggestive),
         ]);
 
