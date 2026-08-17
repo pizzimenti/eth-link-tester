@@ -139,6 +139,46 @@ mod tests {
         assert_eq!(SWEEP[0].name, CONTROL.name);
     }
 
+    /// The sweep matches the shared fixture the managed side is also tested against.
+    ///
+    /// Set membership, names, which address decides, and send order - the four things that have to
+    /// stay in step across a boundary where nothing fails to compile when they do not. `include_str!`
+    /// so the fixture is read at build time and a missing or renamed file is a compile error rather
+    /// than a skipped test.
+    #[test]
+    fn the_sweep_matches_the_shared_fixture() {
+        let fixture = include_str!("../topology-sweep.txt");
+
+        let rows: Vec<&str> = fixture
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+
+        assert_eq!(rows.len(), SWEEP.len(), "the fixture and the sweep differ in size");
+
+        for (row, probe) in rows.iter().zip(SWEEP.iter()) {
+            let fields: Vec<&str> = row.split(',').collect();
+            assert_eq!(fields.len(), 3, "malformed fixture row: {row}");
+
+            assert_eq!(fields[0], probe.name, "name, or send order, differs");
+            assert_eq!(fields[1], format_mac(&probe.mac), "{} has a different address", probe.name);
+            assert_eq!(
+                fields[2] == "yes",
+                probe.discriminating,
+                "{} disagrees about whether it decides the verdict",
+                probe.name
+            );
+        }
+    }
+
+    fn format_mac(mac: &[u8; 6]) -> String {
+        mac.iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
     #[test]
     fn a_captured_frame_is_matched_to_its_address() {
         assert_eq!(addressed_to(&SLOW_PROTOCOLS.mac), Some(SLOW_PROTOCOLS));

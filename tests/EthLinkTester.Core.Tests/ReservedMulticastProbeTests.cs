@@ -4,7 +4,14 @@ namespace EthLinkTester.Core.Tests;
 
 public class ReservedMulticastProbeTests
 {
-    private static ProbeResult Sent(ProbeAddress address, bool crossed) => new(address, crossed);
+    /// <summary>What the engine sends per address.</summary>
+    private const int Repeats = 20;
+
+    private static ProbeResult Sent(ProbeAddress address, bool crossed) =>
+        new(address, Repeats, crossed ? Repeats : 0);
+
+    private static ProbeResult Sent(ProbeAddress address, int arrived) =>
+        new(address, Repeats, arrived);
 
     /// <summary>
     /// The control frame is what separates a measurement from a guess. Without it arriving, silence
@@ -51,6 +58,67 @@ public class ReservedMulticastProbeTests
 
         Assert.Equal(TopologyFinding.Bridged, observation.Finding);
         Assert.Equal(SignalStrength.Strong, observation.Strength);
+    }
+
+    /// <summary>
+    /// The converse gate. A path losing most of its frames loses the whole discriminator probe by
+    /// chance often enough to matter - at 5% delivery, 0.95²⁰ is about a third of the time - and
+    /// the old code called that filtering, because one control frame in twenty was enough to
+    /// declare the path healthy.
+    /// </summary>
+    /// <remarks>
+    /// Wrong in the cheap direction, and stated at Strong with no hedge: a marginal cable on a
+    /// direct rig produced intermittent verdicts implicating a switch nobody owned. This is exactly
+    /// the cable this tool exists to find, so getting it wrong here is not an edge case.
+    /// </remarks>
+    [Fact]
+    public void ALossyPathWithNothingOnTheDiscriminator_IsInconclusive_NotBridged()
+    {
+        var observation = ReservedMulticastProbe.Observe(
+        [
+            Sent(ProbeAddress.Control, arrived: 1),
+            Sent(ProbeAddress.SlowProtocols, arrived: 0),
+        ]);
+
+        Assert.Equal(TopologyFinding.Inconclusive, observation.Finding);
+        Assert.NotEqual(TopologyFinding.Bridged, observation.Finding);
+        Assert.Contains("1 of 20", observation.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The gate is on delivery quality, not perfection: a few lost control frames still leave the
+    /// discriminator's silence meaning something.
+    /// </summary>
+    [Theory]
+    [InlineData(20, TopologyFinding.Bridged)]
+    [InlineData(15, TopologyFinding.Bridged)]
+    [InlineData(14, TopologyFinding.Inconclusive)]
+    [InlineData(5, TopologyFinding.Inconclusive)]
+    public void TheBridgedVerdictNeedsAHealthyControl(int controlArrived, TopologyFinding expected)
+    {
+        var observation = ReservedMulticastProbe.Observe(
+        [
+            Sent(ProbeAddress.Control, arrived: controlArrived),
+            Sent(ProbeAddress.SlowProtocols, arrived: 0),
+        ]);
+
+        Assert.Equal(expected, observation.Finding);
+    }
+
+    /// <summary>
+    /// One arrival is enough to prove forwarding even on a lossy path, and the asymmetry is the
+    /// point: filtering is not a lossy process, so a frame that got through was not filtered.
+    /// </summary>
+    [Fact]
+    public void OneArrivalProvesForwarding_EvenWhenTheControlIsLossy()
+    {
+        var observation = ReservedMulticastProbe.Observe(
+        [
+            Sent(ProbeAddress.Control, arrived: 2),
+            Sent(ProbeAddress.SlowProtocols, arrived: 1),
+        ]);
+
+        Assert.Equal(TopologyFinding.Direct, observation.Finding);
     }
 
     /// <summary>
@@ -120,8 +188,8 @@ public class ReservedMulticastProbeTests
         ]);
 
         Assert.Equal(TopologyFinding.Bridged, observation.Finding);
-        Assert.Contains("MacControlProtocols", observation.Detail);
-        Assert.Contains("NearestBridge", observation.Detail);
+        Assert.Contains("MacControlProtocols", observation.Detail, StringComparison.Ordinal);
+        Assert.Contains("NearestBridge", observation.Detail, StringComparison.Ordinal);
     }
 
     /// <summary>The fingerprint is reported even when nothing reserved crossed.</summary>
@@ -134,7 +202,21 @@ public class ReservedMulticastProbeTests
             Sent(ProbeAddress.SlowProtocols, crossed: false),
         ]);
 
-        Assert.Contains("No reserved address crossed", observation.Detail);
+        Assert.Contains("No reserved address crossed", observation.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>Every verdict states the delivery it rests on, so a report can be argued with.</summary>
+    [Fact]
+    public void TheDetailStatesHowManyFramesArrived()
+    {
+        var observation = ReservedMulticastProbe.Observe(
+        [
+            Sent(ProbeAddress.Control, arrived: 20),
+            Sent(ProbeAddress.SlowProtocols, arrived: 0),
+        ]);
+
+        Assert.Contains("20 of 20", observation.Detail, StringComparison.Ordinal);
+        Assert.Contains("0 of 20", observation.Detail, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -170,8 +252,8 @@ public class ReservedMulticastProbeTests
     }
 
     /// <summary>
-    /// What the sweep is for: lifting a signal that can see a cable from Moderate to no higher than
-    /// Moderate, and standing behind it in the report.
+    /// What the sweep is for: standing behind a signal that can see a cable, and being named in the
+    /// report alongside it.
     /// </summary>
     [Fact]
     public void ADirectSweep_CorroboratesASignalThatCanConclude()

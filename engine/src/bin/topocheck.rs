@@ -30,7 +30,17 @@ const REPEATS: u32 = 20;
 /// How long to wait for the sweep to arrive once it has all been sent.
 const SETTLE: Duration = Duration::from_millis(500);
 
-/// Distinct per invocation, so two overlapping runs cannot read each other's frames as their own.
+/// Distinct per invocation, so two overlapping sweeps are unlikely to read each other's frames.
+///
+/// Unlikely, not impossible: this is the bottom sixteen bits of the process id, so PIDs 4 and 65540
+/// collide. Adequate for a one-shot diagnostic where two concurrent invocations are already
+/// unusual.
+///
+/// **It stops being adequate the moment the sweep moves in-process.** `process::id()` is constant
+/// for the life of an application session, so consecutive sweeps would share an id and stale frames
+/// still sitting in NPF buffers from the previous sweep would count as arrivals in the next - which
+/// is precisely the false "crossed" the whole run-id mechanism exists to prevent. The id has to
+/// become per-sweep at that port; `engine::next_run_id` already does this correctly.
 fn run_id() -> u16 {
     std::process::id() as u16
 }
@@ -139,22 +149,39 @@ fn main() {
     // The control first, always. Nothing else in the sweep means anything until the path is known
     // to be carrying frames at all: a bridge filtering the probe and a capture that never
     // delivered it produce exactly the same silence.
+    //
+    // And then a second gate on how well it carried them. One control frame in twenty used to be
+    // enough to call the path measuring, which on a link losing 95% of frames lets all twenty
+    // discriminator frames vanish by chance about a third of the time - printing a confident
+    // bridging verdict about a marginal cable. Three quarters makes twenty consecutive losses a
+    // one-in-10^12 event, and the reference rig's direct baseline is 20 of 20 on every address.
+    let control_is_healthy = control * 4 >= REPEATS * 3;
+
     println!(
         "\nVERDICT  : {}",
         if control == 0 {
             "INCONCLUSIVE - the control frame never arrived, so this measures nothing.\n           \
-             Check that the link is up, that the adapters are the right way round, and that\n           \
-             promiscuous mode was accepted by the miniport."
+             Check that the link is up, that the adapters are the right way round, that\n           \
+             promiscuous mode was accepted by the miniport, and - if something is in the\n           \
+             path - that it is not filtering unregistered multicast groups, which 802.1Q\n           \
+             8.8.6 permits."
                 .to_owned()
-        } else if discriminator == 0 {
+        } else if discriminator > 0 {
+            "NO 802.1 RELAY IN THE PATH - 01:80:C2:00:00:02 crossed, which no conforming\n           \
+             bridge would allow. A media converter or a PHY repeater would also pass it,\n           \
+             so this corroborates a direct cable rather than proving one."
+                .to_owned()
+        } else if control_is_healthy {
             "SOMETHING IS BRIDGING - the control crossed and 01:80:C2:00:00:02 did not,\n           \
              so a relay component in the path is applying 802.1 filtering rules."
                 .to_owned()
         } else {
-            "NO 802.1 RELAY IN THE PATH - 01:80:C2:00:00:02 crossed, which no conforming\n           \
-             bridge would allow. A media converter or a PHY repeater would also pass it,\n           \
-             so this is strong evidence of a direct cable rather than proof of one."
-                .to_owned()
+            format!(
+                "INCONCLUSIVE - 01:80:C2:00:00:02 did not arrive, but neither did much\n           \
+                 else: the control managed {control} of {REPEATS}. At that delivery rate the\n           \
+                 whole probe can go missing by chance, so this is not evidence of\n           \
+                 filtering. The loss rate is the finding, and it is about the cable."
+            )
         }
     );
 
@@ -163,7 +190,10 @@ fn main() {
          network mistakes these for real LACP, OAM or LLDP frames."
     );
 
-    std::process::exit(i32::from(control == 0));
+    // Non-zero for either inconclusive outcome, not just a dead control. A script that treats "the
+    // path was too lossy to tell" as a clean run has been told nothing and does not know it.
+    let settled = control > 0 && (discriminator > 0 || control_is_healthy);
+    std::process::exit(i32::from(!settled));
 }
 
 fn format_mac(mac: &[u8; 6]) -> String {

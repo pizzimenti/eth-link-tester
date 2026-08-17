@@ -1,0 +1,21 @@
+# The reserved-multicast sweep, as data, in send order.
+#
+# The sweep is defined twice - once in engine/src/topology.rs, which puts the frames on the wire,
+# and once in src/EthLinkTester.Core/Topology/ReservedMulticastProbe.cs, which interprets what came
+# back. Four things have to stay in step across that seam by hand: which addresses are in the set,
+# the names the two sides match each other by, which one address decides the verdict, and the order
+# they are sent in - the engine tests that the control goes first, and the managed enum's
+# declaration order is what any future code deriving order from Enum.GetValues would use.
+#
+# Nothing about the language boundary makes any of that fail to compile. This file is what does:
+# both test suites read it and assert their own definition against it, so a change on either side
+# without a change here breaks that side's build, and a change here breaks whichever side has not
+# followed. It is the same job the telemetry struct's offset assertions do for the other seam,
+# written as a table because this side of the boundary is a list rather than a layout.
+#
+# name,mac,decides
+
+Control,03:00:5E:00:00:01,no
+SlowProtocols,01:80:C2:00:00:02,yes
+MacControlProtocols,01:80:C2:00:00:04,no
+NearestBridge,01:80:C2:00:00:0E,no
