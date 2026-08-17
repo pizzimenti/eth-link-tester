@@ -29,6 +29,7 @@ pub mod frame;
 pub mod histogram;
 pub mod passive;
 pub mod ring;
+pub mod sweep;
 pub mod topology;
 
 pub use engine::{Engine, EngineFault, RunConfig, StartError};

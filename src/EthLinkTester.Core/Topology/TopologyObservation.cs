@@ -86,13 +86,12 @@ public enum TopologySignal
     /// asymmetry is the whole mechanism.
     /// </para>
     /// <para>
-    /// <b>The far end's duplex is read as well as its speed, and it decides the answer.</b> With
-    /// auto-negotiation off the forced PHY stops emitting fast link pulses, so a partner cannot
-    /// negotiate and falls back to parallel detection - which conveys speed but not duplex and so
-    /// comes up half. A far end at 100 half is therefore the signature of a direct connection to a
-    /// silent PHY; a far end at 100 <i>full</i> agreed that duplex with something still sending
-    /// pulses, which the forced adapter was not. Without the duplex read those two are the same
-    /// reading, which is why this signal used to concede a 100 Mbps switch as an unavoidable alias.
+    /// <b>Both ports are read before the force as well as after, and that is what makes it a test
+    /// rather than a snapshot.</b> A switch never propagates a speed change to its far port, so a
+    /// free end that <i>was</i> at a gigabit and then follows down to 100 has to be on the same
+    /// link. Without the before-reading the signal could not tell that from a path already sitting
+    /// at 100 - a 10/100 device in line, or a cable that will not negotiate higher - and reported
+    /// both as a direct cable.
     /// </para>
     /// <para>
     /// Disruptive - it bounces the link and needs the restore journal to put the setting back, so

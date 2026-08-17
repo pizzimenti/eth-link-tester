@@ -213,14 +213,9 @@ public sealed class TopologyDetector
 
         try
         {
-            await SettleAsync(request, forced.Id, request.ForceTarget.Speed, cancellationToken)
+            var (forcedAfter, freeAfter) = await SettleAsync(
+                    request, forced.Id, free.Id, request.ForceTarget.Speed, cancellationToken)
                 .ConfigureAwait(false);
-
-            var (transmitAfter, receiveAfter) = await ReadPairAsync(request, cancellationToken)
-                .ConfigureAwait(false);
-
-            var forcedAfter = Same(transmitAfter, forced) ? transmitAfter : receiveAfter;
-            var freeAfter = Same(transmitAfter, forced) ? receiveAfter : transmitAfter;
 
             return ForcedSpeedAsymmetrySignal.Observe(new ForcedSpeedProbe
             {
@@ -243,58 +238,99 @@ public sealed class TopologyDetector
                     CancellationToken.None)
                 .ConfigureAwait(false);
 
-            await SettleAsync(request, forced.Id, expected: null, CancellationToken.None)
+            await SettleAsync(request, forced.Id, free.Id, expected: null, CancellationToken.None)
                 .ConfigureAwait(false);
         }
     }
 
     /// <summary>
-    /// Waits for an adapter's link to come back, and to reach <paramref name="expected"/> if given.
+    /// Waits for both ends to come back after a speed write, and returns them.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Returns rather than throws on timeout, and that is deliberate. A link that does not come
-    /// back is a real outcome the signal knows how to describe - a far end with no 100BASE-TX
-    /// ability, or automatic MDI/MDI-X dropping out because it is driven by link pulses that a
-    /// forced PHY no longer sends. Throwing here would turn a reportable observation into an error.
+    /// <b>Both ends, and the free one twice.</b> Waiting only for the forced adapter is what the
+    /// first version did, and on the reference rig it produced a confident "the far end did not
+    /// link" about a cable that was linked the whole time: writing <c>*SpeedDuplex</c> restarts the
+    /// miniport and bounces the link at <i>both</i> ends, so a pair read taken the moment the forced
+    /// end reports its target catches the other one still down. Watching a bench meter showed both
+    /// ends back at 100 Mbps within a second and a half; the detector said one of them was dark.
     /// </para>
     /// <para>
-    /// Waiting for the expected speed rather than merely for a link matters on the way in: a driver
-    /// that takes the write and keeps negotiating comes back up at a gigabit almost immediately, and
-    /// returning on first link would hand the signal a reading taken before the PHY had settled -
-    /// making an honest driver look like a dishonest one.
+    /// The free end has to report the same speed on two consecutive polls, which closes the
+    /// opposite hazard: a stale reading taken before the restart shows the <i>old</i> speed and
+    /// looks perfectly healthy, so "has a link" alone would happily proceed on a pre-force value.
+    /// It also gives the free-end reading the read-settle-reread confirmation that
+    /// <see cref="LinkSpeedSignal"/>'s Conclusive verdict has always wanted and never had.
+    /// </para>
+    /// <para>
+    /// Waiting for the forced end to reach the <i>expected</i> speed rather than merely to link
+    /// matters for a different reason: a driver that takes the write and keeps negotiating comes
+    /// back at a gigabit almost immediately, and returning on first link would hand the signal a
+    /// reading taken before the PHY had settled - making an honest driver look like a dishonest one.
+    /// </para>
+    /// <para>
+    /// Returns whatever it has on timeout rather than throwing. A link that genuinely does not come
+    /// back is a real outcome the signal knows how to describe, and throwing would turn a reportable
+    /// observation into an error.
     /// </para>
     /// </remarks>
-    private async Task SettleAsync(
+    private async Task<(NetworkAdapterInfo Forced, NetworkAdapterInfo Free)> SettleAsync(
         TopologyDetectionRequest request,
-        string adapterId,
+        string forcedId,
+        string freeId,
         LinkSpeed? expected,
         CancellationToken cancellationToken)
     {
         var deadline = _time.GetUtcNow() + request.LinkSettleTimeout;
+        LinkSpeed? previousFree = null;
+        (NetworkAdapterInfo? Forced, NetworkAdapterInfo? Free) latest = (null, null);
 
         while (true)
         {
-            var adapter = await FindAsync(adapterId, cancellationToken).ConfigureAwait(false);
+            var all = await _adapters.GetPhysicalAdaptersAsync(cancellationToken)
+                .ConfigureAwait(false);
 
             // Null is expected while the miniport restarts: writing *SpeedDuplex takes the adapter
             // out of the enumeration entirely for a moment.
-            if (adapter?.NegotiatedSpeed is { } speed && (expected is null || speed == expected))
+            var forced = Match(all, forcedId);
+            var free = Match(all, freeId);
+            latest = (forced ?? latest.Forced, free ?? latest.Free);
+
+            var forcedSettled = forced?.NegotiatedSpeed is { } speed
+                && (expected is null || speed == expected);
+            var freeSettled = free?.NegotiatedSpeed is { } freeSpeed && freeSpeed == previousFree;
+
+            previousFree = free?.NegotiatedSpeed;
+
+            if (forcedSettled && freeSettled)
             {
-                return;
+                break;
             }
 
-            // Read first, then wait. A link that is already where it should be costs nothing, which
-            // is what makes this loop cheap on a rig that settles fast and testable without a
-            // controllable timer.
             if (_time.GetUtcNow() >= deadline)
             {
-                return;
+                break;
             }
 
             await Task.Delay(PollInterval, _time, cancellationToken).ConfigureAwait(false);
         }
+
+        // A pair that never came back at all is still a pair: the signal reads a null negotiated
+        // speed as "did not link", which is the honest description of what was seen.
+        return (
+            latest.Forced ?? Down(forcedId),
+            latest.Free ?? Down(freeId));
     }
+
+    /// <summary>A placeholder for an adapter that vanished from the enumeration and stayed away.</summary>
+    private static NetworkAdapterInfo Down(string adapterId) => new()
+    {
+        Id = adapterId,
+        Name = adapterId,
+        Description = "not currently enumerated",
+        MacAddress = string.Empty,
+        Status = AdapterStatus.Disconnected,
+    };
 
     private async Task<(NetworkAdapterInfo Transmit, NetworkAdapterInfo Receive)> ReadPairAsync(
         TopologyDetectionRequest request, CancellationToken cancellationToken)
@@ -306,20 +342,11 @@ public sealed class TopologyDetector
             Find(all, request.ReceiveAdapterId));
     }
 
-    private async Task<NetworkAdapterInfo?> FindAsync(
-        string adapterId, CancellationToken cancellationToken)
-    {
-        var all = await _adapters.GetPhysicalAdaptersAsync(cancellationToken).ConfigureAwait(false);
-
-        return all.FirstOrDefault(
-            a => string.Equals(a.Id, adapterId, StringComparison.OrdinalIgnoreCase));
-    }
+    private static NetworkAdapterInfo? Match(
+        IReadOnlyList<NetworkAdapterInfo> all, string adapterId) =>
+        all.FirstOrDefault(a => string.Equals(a.Id, adapterId, StringComparison.OrdinalIgnoreCase));
 
     private static NetworkAdapterInfo Find(
         IReadOnlyList<NetworkAdapterInfo> all, string adapterId) =>
-        all.FirstOrDefault(a => string.Equals(a.Id, adapterId, StringComparison.OrdinalIgnoreCase))
-            ?? throw AdapterNotFoundException.ForAdapter(adapterId);
-
-    private static bool Same(NetworkAdapterInfo a, NetworkAdapterInfo b) =>
-        string.Equals(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
+        Match(all, adapterId) ?? throw AdapterNotFoundException.ForAdapter(adapterId);
 }

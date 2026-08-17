@@ -68,15 +68,31 @@ public sealed record ForcedSpeedProbe
 /// side is sufficient; the asymmetry is the mechanism, not the particular speeds.
 /// </para>
 /// <para>
-/// <b>Duplex is the discriminator, and it is the reason this signal can now separate its own worst
-/// alias.</b> Turning auto-negotiation off stops the forced PHY sending fast link pulses, so an
-/// auto-negotiating partner cannot negotiate at all: it falls back to parallel detection, which
-/// carries speed but not duplex and therefore defaults to <b>half</b> (802.3 Clause 28). So on a
-/// direct cable the free end comes up at 100 <i>half</i> - the fingerprint of talking straight to a
-/// PHY that has gone silent. A free end at 100 <i>full</i> negotiated that duplex with something
-/// that was still sending link pulses, and the forced adapter was not: something in the path was.
-/// That turns "a 100 Mbps switch looks the same" from a permanent limit into a detectable case, and
-/// catches half-duplex-only repeater hubs on the same read.
+/// <b>The before-readings are what close the 100 Mbps switch alias, and it took a rig run to see
+/// that.</b> A switch terminates each segment separately, so a speed change at one end never
+/// reaches its far port: force A to 100 through a gigabit switch and B stays at a gigabit, which is
+/// a mismatch. For B to have been at a gigabit and then follow A down to 100, the change has to
+/// have propagated - and propagating is exactly what a relay does not do. The alias only ever
+/// existed because the signal could not tell "already at 100" from "moved to 100", which is a
+/// missing reading rather than a limit of physics.
+/// </para>
+/// <para>
+/// <b>Duplex is reported and does not decide anything, which is a correction to what this file
+/// said first.</b> The reasoning was that auto-negotiation off stops the forced PHY sending fast
+/// link pulses, so the partner must fall back on parallel detection - which conveys speed but not
+/// duplex and defaults to half (802.3 Clause 28) - making a far end at 100 <i>full</i> proof that
+/// something in the path had negotiated. Measured on the reference rig, forcing the Killer E2400 to
+/// 100 full brings the Realtek up at 100 <b>full</b>, on a bare cable, within a second and a half.
+/// The likeliest explanation is the one this repo already documents elsewhere: a driver asked for a
+/// fixed speed may restrict its <i>advertised capability</i> and keep negotiating rather than
+/// disabling negotiation at all - see <see cref="SpeedDuplex.IsTrulyForceable"/>, which exists
+/// because the other adapter on this rig offers a fixed gigabit it cannot honour.
+/// </para>
+/// <para>
+/// So a duplex-based finding would have reported a bare cable as bridged on the reference hardware.
+/// A far end at half duplex is still worth saying - it is the parallel-detection signature, and it
+/// means the far PHY really did stop hearing link pulses - but it is colour in the Detail, not a
+/// verdict.
 /// </para>
 /// <para>
 /// <b>This mutates adapter state and must run under the restore journal.</b> The caller is
@@ -176,44 +192,41 @@ public static class ForcedSpeedAsymmetrySignal
                 + "end that does not follow the other is not connected to it.");
         }
 
-        // Both ends at the target, having genuinely moved there. Duplex decides which kind of thing
-        // is at the far end - see the type remarks for why parallel detection makes half the
-        // direct-cable signature and full the sign of a negotiating partner in between.
-        return free.Duplex switch
-        {
-            DuplexMode.Half => new TopologyObservation(
-                TopologySignal.ForcedSpeedAsymmetry,
-                TopologyFinding.Direct,
-                SignalStrength.Strong,
-                $"{forced.Name} was forced from {ForcedBeforeText(probe)} to {target.ShortName()} "
-                + $"and {free.Name} followed it down from {freeBefore.ShortName()}, coming up half "
-                + "duplex. That is the parallel-detection signature: the far PHY stopped hearing "
-                + "link pulses and fell back on the signalling alone, which carries speed but not "
-                + "duplex. Something that negotiates would have agreed full duplex instead."),
-
-            DuplexMode.Full => new TopologyObservation(
-                TopologySignal.ForcedSpeedAsymmetry,
-                TopologyFinding.Bridged,
-                SignalStrength.Strong,
-                $"{forced.Name} was forced from {ForcedBeforeText(probe)} to {target.ShortName()} "
-                + $"and {free.Name} came down from {freeBefore.ShortName()} to "
-                + $"{freeSpeed.ShortName()} full duplex. Full duplex has to be negotiated, and the "
-                + "forced adapter stopped sending link pulses when its auto-negotiation was turned "
-                + "off - so whatever agreed full duplex with this end was not the far NIC."),
-
-            _ => new TopologyObservation(
-                TopologySignal.ForcedSpeedAsymmetry,
-                TopologyFinding.Direct,
-                SignalStrength.Suggestive,
-                $"{forced.Name} was forced from {ForcedBeforeText(probe)} to {target.ShortName()} "
-                + $"and {free.Name} followed it down from {freeBefore.ShortName()}. A link that "
-                + "changes speed at both ends together is one link - but the driver did not report "
-                + $"{free.Name}'s duplex, and duplex is what separates this from a "
-                + $"{target.ShortName()} switch, so it corroborates rather than concludes."),
-        };
+        // Both ends at the target, having genuinely moved there. A relay would have kept its far
+        // port where it was, so the propagation is the evidence.
+        return new TopologyObservation(
+            TopologySignal.ForcedSpeedAsymmetry,
+            TopologyFinding.Direct,
+            SignalStrength.Strong,
+            $"{forced.Name} was forced from {ForcedBeforeText(probe)} to {target.ShortName()} and "
+            + $"{free.Name} followed it down from {freeBefore.ShortName()} to "
+            + $"{freeSpeed.ShortName()}{DuplexNote(free.Duplex)}. A switch terminates each segment "
+            + "separately, so its far port would have stayed where it was; a change that reached "
+            + "both ends crossed one link. A repeater or media converter would also pass it on, "
+            + "which is why this is strong rather than conclusive.");
     }
 
     /// <summary>The forced end's speed before the force, for a Detail that names the transition.</summary>
     private static string ForcedBeforeText(ForcedSpeedProbe probe) =>
         probe.ForcedBefore.NegotiatedSpeed is { } before ? before.ShortName() : "an unlinked state";
+
+    /// <summary>
+    /// What the far end's duplex adds, which is context rather than a conclusion.
+    /// </summary>
+    /// <remarks>
+    /// Half duplex is the parallel-detection signature and worth saying: the far PHY stopped
+    /// hearing link pulses and fell back on the signalling alone. Full duplex is <i>not</i> evidence
+    /// against a direct link, whatever the standards reasoning suggests - the reference rig produces
+    /// it on a bare cable, because a driver asked for a fixed speed may restrict advertised
+    /// capability and keep negotiating.
+    /// </remarks>
+    private static string DuplexNote(DuplexMode duplex) => duplex switch
+    {
+        DuplexMode.Half =>
+            " half duplex, which is what a partner falls back to when the other end stops "
+            + "negotiating",
+        DuplexMode.Full => " full duplex, so the forced end was still negotiating rather than "
+            + "signalling blind",
+        _ => string.Empty,
+    };
 }

@@ -34,6 +34,8 @@ pub const ELT_ERR_NOT_RUNNING: i32 = -5;
 pub const ELT_ERR_SAME_DEVICE: i32 = -6;
 /// The frame length is outside what a legal Ethernet frame can carry.
 pub const ELT_ERR_FRAME_LENGTH: i32 = -7;
+/// An output buffer is not the length this ABI requires, so writing it would overrun or truncate.
+pub const ELT_ERR_BUFFER_SIZE: i32 = -8;
 
 const STATE_RUNNING: u32 = 0;
 const STATE_STOPPED: u32 = 2;
@@ -337,3 +339,150 @@ pub unsafe extern "C" fn elt_engine_fault(handle: *mut EngineHandle) -> i32 {
 pub extern "C" fn elt_sample_size() -> u32 {
     core::mem::size_of::<TelemetrySample>() as u32
 }
+
+/// The number of sweep addresses, so the host can size its buffer and check its own copy.
+///
+/// The sweep is defined on both sides of this boundary - see `engine/topology-sweep.txt`, which
+/// both languages' tests assert against - and this is the run-time half of that agreement. A host
+/// that disagrees about the count would read one address's arrivals under another's name.
+#[unsafe(no_mangle)]
+pub extern "C" fn elt_sweep_addresses() -> u32 {
+    crate::topology::SWEEP.len() as u32
+}
+
+/// Runs the reserved-multicast sweep and writes per-address arrival counts.
+///
+/// `arrived` receives one count per address in [`crate::topology::SWEEP`] order, control first.
+/// `arrived_len` must be [`elt_sweep_addresses`]; anything else is rejected rather than truncated,
+/// because a short buffer silently dropping the discriminator is precisely the failure that would
+/// read as "nothing filtered it".
+///
+/// Synchronous, and it blocks for about half a second while the sweep settles. That is the cheapest
+/// honest implementation: the measurement is a fixed short burst rather than a run, so a handle, a
+/// polling loop and a state machine would be machinery around a function call. The host calls it off
+/// the UI thread.
+///
+/// # Safety
+/// `tx_device` and `rx_device` must be null-terminated UTF-8. `tx_mac` must point to six readable
+/// bytes. `arrived` must point to `arrived_len` writable `u32`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn elt_topology_sweep(
+    tx_device: *const std::ffi::c_char,
+    rx_device: *const std::ffi::c_char,
+    tx_mac: *const u8,
+    repeats: u32,
+    arrived: *mut u32,
+    arrived_len: u32,
+) -> i32 {
+    if tx_device.is_null() || rx_device.is_null() || tx_mac.is_null() || arrived.is_null() {
+        return ELT_ERR_NULL_ARGUMENT;
+    }
+
+    if arrived_len != elt_sweep_addresses() {
+        return ELT_ERR_BUFFER_SIZE;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let tx = match unsafe { std::ffi::CStr::from_ptr(tx_device) }.to_str() {
+            Ok(text) => text,
+            Err(_) => return ELT_ERR_BAD_UTF8,
+        };
+        let rx = match unsafe { std::ffi::CStr::from_ptr(rx_device) }.to_str() {
+            Ok(text) => text,
+            Err(_) => return ELT_ERR_BAD_UTF8,
+        };
+
+        let mut address = [0u8; 6];
+        unsafe { std::ptr::copy_nonoverlapping(tx_mac, address.as_mut_ptr(), 6) };
+
+        // Per-sweep rather than per-process. Frames from an earlier sweep can still be sitting in
+        // an NPF buffer, and sharing an id would count them as this sweep's arrivals.
+        let run_id = crate::engine::next_run_id();
+
+        match crate::sweep::run(tx, rx, address, repeats, run_id) {
+            Ok(outcome) => {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        outcome.arrived.as_ptr(),
+                        arrived,
+                        outcome.arrived.len(),
+                    );
+                }
+                ELT_OK
+            }
+            Err(_) => ELT_ERR_OPEN_FAILED,
+        }
+    }));
+
+    result.unwrap_or(ELT_ERR_PANIC)
+}
+
+/// Listens on two adapters for LLDP, CDP and STP, excluding both MACs as sources.
+///
+/// `counts` receives LLDP, STP and CDP totals across both adapters, in that order. Which port heard
+/// a device is a detail the diagnostic binary prints and a verdict does not need: a device on either
+/// segment is a device in the path.
+///
+/// Blocks for `seconds`, which the caller should expect to be minutes - silence is only evidence
+/// after three CDP intervals. See `passive::HONEST_SILENCE_SECONDS`.
+///
+/// # Safety
+/// Both device strings must be null-terminated UTF-8, both MAC pointers must have six readable
+/// bytes, and `counts` must point to `counts_len` writable `u32`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn elt_passive_listen(
+    device_a: *const std::ffi::c_char,
+    device_b: *const std::ffi::c_char,
+    mac_a: *const u8,
+    mac_b: *const u8,
+    seconds: u32,
+    counts: *mut u32,
+    counts_len: u32,
+) -> i32 {
+    if device_a.is_null()
+        || device_b.is_null()
+        || mac_a.is_null()
+        || mac_b.is_null()
+        || counts.is_null()
+    {
+        return ELT_ERR_NULL_ARGUMENT;
+    }
+
+    if counts_len != PROTOCOL_COUNT {
+        return ELT_ERR_BUFFER_SIZE;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut devices = Vec::with_capacity(2);
+        for device in [device_a, device_b] {
+            match unsafe { std::ffi::CStr::from_ptr(device) }.to_str() {
+                Ok(text) => devices.push(text.to_owned()),
+                Err(_) => return ELT_ERR_BAD_UTF8,
+            }
+        }
+
+        let mut macs = [[0u8; 6]; 2];
+        unsafe {
+            std::ptr::copy_nonoverlapping(mac_a, macs[0].as_mut_ptr(), 6);
+            std::ptr::copy_nonoverlapping(mac_b, macs[1].as_mut_ptr(), 6);
+        }
+
+        match crate::sweep::listen(&devices, &macs, std::time::Duration::from_secs(seconds.into())) {
+            Ok(heard) => {
+                let totals = [
+                    heard.iter().map(|h| h.lldp).sum::<u32>(),
+                    heard.iter().map(|h| h.stp).sum::<u32>(),
+                    heard.iter().map(|h| h.cdp).sum::<u32>(),
+                ];
+                unsafe { std::ptr::copy_nonoverlapping(totals.as_ptr(), counts, totals.len()) };
+                ELT_OK
+            }
+            Err(_) => ELT_ERR_OPEN_FAILED,
+        }
+    }));
+
+    result.unwrap_or(ELT_ERR_PANIC)
+}
+
+/// LLDP, STP and CDP - the three the passive filter matches.
+const PROTOCOL_COUNT: u32 = 3;

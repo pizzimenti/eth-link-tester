@@ -54,59 +54,58 @@ public class ForcedSpeedAsymmetrySignalTests
     }
 
     /// <summary>
-    /// Following down at half duplex is the parallel-detection signature, and the strongest
-    /// positive statement any signal in this set can make about a direct cable.
+    /// The mechanism, positively: the free end was above the target and followed it down, so the
+    /// change crossed one link.
     /// </summary>
     /// <remarks>
-    /// A forced PHY stops sending fast link pulses, so an auto-negotiating partner cannot
-    /// negotiate; parallel detection brings the link up on the signalling alone, which carries
-    /// speed but not duplex and defaults to half. Half at the far end therefore means the far end
-    /// heard a silent PHY, which is what a cable delivers and a switch port does not.
+    /// A switch terminates each segment separately and never propagates a speed change to its far
+    /// port, so a free end that was at a gigabit and is now at 100 cannot have a relay in between.
+    /// That is what the before-reading buys, and it is the only positive statement about a direct
+    /// cable any signal in this set can make.
     /// </remarks>
-    [Fact]
-    public void FreeEndFollowsDownHalfDuplex_ArguesDirect()
+    [Theory]
+    [InlineData(DuplexMode.Half)]
+    [InlineData(DuplexMode.Full)]
+    [InlineData(DuplexMode.Unknown)]
+    public void FreeEndFollowsDown_ArguesDirect_WhateverTheDuplex(DuplexMode duplex)
     {
         var observation = ForcedSpeedAsymmetrySignal.Observe(
-            Cycle(forcedAfter: Fast, freeAfter: Fast, freeDuplex: DuplexMode.Half));
+            Cycle(forcedAfter: Fast, freeAfter: Fast, freeDuplex: duplex));
 
         Assert.Equal(TopologyFinding.Direct, observation.Finding);
         Assert.Equal(SignalStrength.Strong, observation.Strength);
-        Assert.Contains("parallel-detection", observation.Detail, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The alias this signal could not previously see, now the other way up: a free end at
-    /// 100 <b>full</b> negotiated its duplex with something, and the forced adapter had stopped
-    /// negotiating - so the something is in the path.
+    /// Duplex is reported and decides nothing, which is a correction the reference rig forced.
     /// </summary>
     /// <remarks>
-    /// This is the 100 Mbps switch the old comment described as indistinguishable and priced at
-    /// Strong-Direct anyway. It is not indistinguishable; it was unread. Detecting it flips the
-    /// finding rather than weakening it, which is the difference between a hardened signal and a
-    /// hedged one.
+    /// The standards reasoning says a forced PHY stops sending fast link pulses, so the partner
+    /// falls back on parallel detection - which conveys speed but not duplex and defaults to half -
+    /// making a far end at 100 full proof that something in the path negotiated. Measured, forcing
+    /// the Killer E2400 to 100 full brings the Realtek up at 100 <b>full</b> on a bare cable in
+    /// under two seconds, most likely because the driver restricts advertised capability rather
+    /// than disabling negotiation. A duplex-based finding would have called the reference rig
+    /// bridged.
     /// </remarks>
     [Fact]
-    public void FreeEndFollowsDownFullDuplex_ProvesSomethingNegotiated()
+    public void FullDuplexAtTheFarEnd_IsNotEvidenceOfABridge()
     {
         var observation = ForcedSpeedAsymmetrySignal.Observe(
             Cycle(forcedAfter: Fast, freeAfter: Fast, freeDuplex: DuplexMode.Full));
 
-        Assert.Equal(TopologyFinding.Bridged, observation.Finding);
-        Assert.Equal(SignalStrength.Strong, observation.Strength);
+        Assert.NotEqual(TopologyFinding.Bridged, observation.Finding);
+        Assert.Contains("full duplex", observation.Detail, StringComparison.Ordinal);
     }
 
-    /// <summary>Without a duplex reading the alias is back, so the finding cannot conclude.</summary>
+    /// <summary>Half duplex is still worth naming, as the parallel-detection signature.</summary>
     [Fact]
-    public void FreeEndFollowsDownWithNoDuplexReported_OnlyCorroborates()
+    public void HalfDuplexAtTheFarEnd_IsNamedInTheDetail()
     {
         var observation = ForcedSpeedAsymmetrySignal.Observe(
-            Cycle(forcedAfter: Fast, freeAfter: Fast, freeDuplex: DuplexMode.Unknown));
+            Cycle(forcedAfter: Fast, freeAfter: Fast, freeDuplex: DuplexMode.Half));
 
-        Assert.Equal(TopologyFinding.Direct, observation.Finding);
-        Assert.Equal(SignalStrength.Suggestive, observation.Strength);
-        Assert.False(
-            TopologyVerdict.From([observation]).GradingIsAttributable,
-            "an unread duplex leaves a 100 Mbps switch indistinguishable, which must not grade");
+        Assert.Contains("half duplex", observation.Detail, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -133,7 +132,7 @@ public class ForcedSpeedAsymmetrySignalTests
     /// cable, which nothing else in the set can do on its own.
     /// </summary>
     [Fact]
-    public void FollowingDownAtHalfDuplex_PermitsGrading()
+    public void FollowingDown_PermitsGrading()
     {
         var verdict = TopologyVerdict.From(
         [

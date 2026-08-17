@@ -418,7 +418,7 @@ impl Drop for Engine {
 /// otherwise each count the other's frames as their own deliveries, and a cable dropping everything
 /// in one direction would still report a full receive count. Sixteen bits is enough: the id only
 /// has to distinguish runs that overlap in time on one wire.
-fn next_run_id() -> u16 {
+pub fn next_run_id() -> u16 {
     static NEXT: AtomicU16 = AtomicU16::new(0);
     static SEED: OnceLock<u16> = OnceLock::new();
 
