@@ -484,6 +484,12 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         _engine = null;
     }
 
+    /// <summary>
+    /// Held for the length of a hardware run, so topology detection cannot bounce the link
+    /// underneath it. Null for a simulated run, which touches no adapter.
+    /// </summary>
+    private IDisposable? _hardware;
+
     [RelayCommand(CanExecute = nameof(CanStart))]
     private async Task StartAsync()
     {
@@ -491,6 +497,23 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
 
         try
         {
+            // Claimed before anything is opened, not after the run is under way. The Rig page's
+            // topology probe forces *SpeedDuplex on these same adapters, and its page is a
+            // navigation away - so the window between "the user pressed Start" and "the engine is
+            // sampling" is exactly when a link bounce would be invisible and fatal to the run.
+            if (Source == EngineSource.Hardware)
+            {
+                _hardware = HardwareSession.TryClaim("a Lab Mode run");
+
+                if (_hardware is null)
+                {
+                    ErrorMessage =
+                        $"The adapters are in use by {HardwareSession.Holder}. Wait for it to "
+                        + "finish, or stop it, before starting a run.";
+                    return;
+                }
+            }
+
             if (!await ConfirmRigUnchangedAsync())
             {
                 return;
@@ -524,6 +547,19 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             ErrorMessage = $"Could not start the run: {ex.Message}";
             IsRunning = false;
             await DisposeEngineAsync();
+        }
+        finally
+        {
+            // Every early return out of the try leaves IsRunning false without ever having set it -
+            // a rig that changed under the user, a build with no engine - so the property-change
+            // hook that normally releases the claim never fires. A leaked claim locks topology
+            // detection out for the life of the process with nothing on screen to explain it, so
+            // the release is anchored to the outcome rather than to any particular exit.
+            if (!IsRunning)
+            {
+                _hardware?.Dispose();
+                _hardware = null;
+            }
         }
     }
 
@@ -791,6 +827,24 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         finally
         {
             IsRunning = false;
+        }
+    }
+
+    /// <summary>
+    /// Released on every path out of a run.
+    /// </summary>
+    /// <remarks>
+    /// Hooked to <see cref="IsRunning"/> rather than written into each exit, because there are
+    /// three - a start that threw, the fault handler, and Stop - and a claim leaked on any one of
+    /// them would lock topology detection out for the life of the process with no way to clear it.
+    /// One place that cannot be forgotten beats three that can.
+    /// </remarks>
+    partial void OnIsRunningChanged(bool value)
+    {
+        if (!value)
+        {
+            _hardware?.Dispose();
+            _hardware = null;
         }
     }
 

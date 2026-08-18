@@ -119,6 +119,11 @@ internal sealed partial class TopologyViewModel : ObservableObject
         _configurator = configurator;
         _bridges = bridges;
         _probeFactory = probeFactory;
+
+        // A Lab Mode run holds the adapters and its page is cached, so it survives the user
+        // navigating here. Without this the Detect button stays live and forcing a speed would
+        // bounce the link under a measurement that is still going.
+        HardwareSession.Changed += (_, _) => DetectCommand.NotifyCanExecuteChanged();
     }
 
     public ObservableCollection<TopologyObservationViewModel> Observations { get; } = [];
@@ -141,11 +146,14 @@ internal sealed partial class TopologyViewModel : ObservableObject
     [ObservableProperty]
     public partial string Headline { get; set; } = "Topology not checked yet.";
 
-    [ObservableProperty]
-    public partial string Detail { get; set; } =
+    /// <summary>What the panel says before anything has been measured.</summary>
+    private const string UncheckedDetail =
         "Detection says whether these two adapters are wired to each other or have a switch "
         + "between them. Nothing downstream can tell the difference, so a grade means nothing "
         + "until this does.";
+
+    [ObservableProperty]
+    public partial string Detail { get; set; } = UncheckedDetail;
 
     [ObservableProperty]
     public partial InfoBarSeverity Severity { get; set; } = InfoBarSeverity.Informational;
@@ -185,6 +193,23 @@ internal sealed partial class TopologyViewModel : ObservableObject
 
     public bool HasCaveat => !string.IsNullOrWhiteSpace(Caveat);
 
+    /// <summary>
+    /// Drops every verdict-derived field back to its unestablished state.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the pair changing and by a detection that failed, because both leave the same
+    /// thing true: nothing on screen is a statement about the hardware in front of the user.
+    /// </remarks>
+    private void Forget()
+    {
+        Observations.Clear();
+        Headline = "Topology not established";
+        Detail = UncheckedDetail;
+        Severity = InfoBarSeverity.Informational;
+        GradingIsAttributable = false;
+        GradingNote = "Not established.";
+    }
+
     /// <summary>Called by the rig page whenever its adapter list changes.</summary>
     public void SetPair(IReadOnlyList<NetworkAdapterInfo> adapters)
     {
@@ -200,18 +225,35 @@ internal sealed partial class TopologyViewModel : ObservableObject
         // A verdict describes the pair it was taken on, so it stops meaning anything the moment the
         // pair changes. Clearing is the only honest response; keeping it would let a reading from
         // one cable stand next to another.
-        Observations.Clear();
+        Forget();
         Headline = "Topology not checked yet.";
-        Severity = InfoBarSeverity.Informational;
-        GradingIsAttributable = false;
-        GradingNote = "Not established.";
     }
 
-    private bool CanDetect() => RigIsComplete && !IsBusy;
+    private bool CanDetect() => RigIsComplete && !IsBusy && !HardwareSession.IsBusy;
+
+    /// <summary>Why the button is disabled, when the reason is not on this page.</summary>
+    private static string? HardwareInUse =>
+        HardwareSession.Holder is { } holder
+            ? $"The adapters are in use by {holder}. Detection would bounce the link underneath it."
+            : null;
 
     [RelayCommand(CanExecute = nameof(CanDetect))]
     private async Task DetectAsync()
     {
+        // One immutable pair for the whole operation. `_pair` is replaced whenever the rig page
+        // re-enumerates, and every step below sits behind an await - so without this a refresh
+        // mid-detection could have one pair pass preflight and a different pair get probed, forced
+        // and published, with nothing in the result saying which cable it described.
+        var pair = _pair;
+
+        using var hardware = HardwareSession.TryClaim("topology detection");
+
+        if (hardware is null)
+        {
+            ErrorMessage = HardwareInUse;
+            return;
+        }
+
         IsBusy = true;
         ErrorMessage = null;
         Caveat = null;
@@ -225,7 +267,7 @@ internal sealed partial class TopologyViewModel : ObservableObject
             // is shaped to avoid. Refused loudly rather than hidden: the adapter is present and
             // working, and someone hunting for a NIC that vanished from a list is worse off than
             // someone told what to unbind.
-            foreach (var adapter in _pair)
+            foreach (var adapter in pair)
             {
                 var bridge = await _bridges.InspectAsync(adapter.Id);
 
@@ -245,12 +287,12 @@ internal sealed partial class TopologyViewModel : ObservableObject
                 }
             }
 
-            var detector = new TopologyDetector(_provider, _configurator, _probeFactory(_pair));
+            var detector = new TopologyDetector(_provider, _configurator, _probeFactory(pair));
 
             var detection = await detector.DetectAsync(new TopologyDetectionRequest
             {
-                TransmitAdapterId = _pair[0].Id,
-                ReceiveAdapterId = _pair[1].Id,
+                TransmitAdapterId = pair[0].Id,
+                ReceiveAdapterId = pair[1].Id,
                 AllowDisruptive = AllowDisruptive,
             });
 
@@ -302,9 +344,12 @@ internal sealed partial class TopologyViewModel : ObservableObject
             // Without this the faulted task escapes AsyncRelayCommand onto the UI thread and
             // terminates the app with no message. On real hardware this is routine rather than
             // exotic: Npcap missing, an adapter unplugged mid-probe, elevation denied.
+            // Every verdict-derived field, not just the headline. A previous run that reached
+            // Direct would otherwise leave "a grade from this rig can be attributed to the cable"
+            // standing in the always-open Grading bar, directly beside a detection error - which is
+            // the most confidently wrong thing this page could say.
             ErrorMessage = $"Topology detection failed: {ex.Message}";
-            Headline = "Topology not established";
-            Severity = InfoBarSeverity.Informational;
+            Forget();
         }
         finally
         {
