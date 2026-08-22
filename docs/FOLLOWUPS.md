@@ -2,20 +2,27 @@
 
 Known, deliberate, and not yet done. Everything here was found by a review, verified against the
 source, and judged not worth blocking a merge — which is a different statement from "not worth
-doing". Anything that would publish a wrong measurement is fixed rather than listed.
+doing".
+
+The rule for what lands here rather than being fixed: anything that would publish a wrong
+measurement *from the current feature set* is fixed rather than listed. The exception is the first
+item below, which does exactly that and is out of the scope of the branch that found it — so it is
+recorded at the top rather than quietly carried.
 
 Each entry says what is wrong, what it costs today, and what would settle it. An item with no
 stated cost is a smell: if nobody can say what it breaks, it probably belongs in the bin rather
 than in this file.
 
-Sources: `~/.claude/pair/eth-link-tester/findings-0N.md` (adversarial review), plus the Codex and
-CodeRabbit passes on PR #9.
+Sources: an out-of-band adversarial review (three passes, kept outside the repository so review
+chatter does not ride along into a PR), plus the Codex and CodeRabbit passes on the pull requests.
+Identifiers like *review F22* refer to that review's numbering and are kept so a claim can be
+traced back to the pass that made it.
 
 ---
 
 ## Measurement correctness
 
-### The end-of-run drain never happens *(from findings-03 F22 — pre-existing, Phase 3)*
+### The end-of-run drain never happens *(review 03, F22 — pre-existing, Phase 3)*
 
 `NativePacketEngine.StopAsync` claims the handle with an `Interlocked.Exchange` **before** the
 500 ms quiesce, so every telemetry poll during that window sees a zeroed handle and drains nothing.
@@ -31,7 +38,7 @@ highest-value item here.
 both NICs' hardware counters. Expect a shortfall near 0.3%. `enginerun` has its own drain loop and
 is unaffected, which is why the rig runs have never shown it.
 
-### Tagged LLDP is invisible to every shipped listen *(findings-03 F16)*
+### Tagged LLDP is invisible to every shipped listen *(review 03, F16)*
 
 `LLDP_TAGGED` exists, is tested, and is used by nothing. The docs say "a separate listen with
 `LLDP_TAGGED` is the way to cover tagged frames" — no such listen exists, so a switch announcing
@@ -42,7 +49,7 @@ keyword is a compile-time offset shift, not a predicate, and parentheses do not 
 it, so a tagged term ahead of the STP and CDP terms breaks both. A second capture handle is the
 fix, not a bigger filter.
 
-### `unclassified` never crosses the FFI *(findings-03 F17)*
+### `unclassified` never crosses the FFI *(review 03, F17)*
 
 `Heard.unclassified` counts frames that passed the kernel filter and did not classify — which the
 module doc calls "worth looking at", because the filter and the classifier disagreeing means one of
@@ -53,7 +60,7 @@ the app is structurally blind to it.
 
 ## Reporting and honesty
 
-### The forced-speed opt-in never mentions the default route *(findings-03 F18)*
+### The forced-speed opt-in never mentions the default route *(review 03, F18)*
 
 The project constraint is that any adapter may be tested including the default-route one, "on
 condition the warning is loud and the confirmation explicit". Lab Mode implements that with
@@ -62,28 +69,28 @@ checkbox states the link-drop cost and never the default-route hazard, and if *b
 a default route the selection falls through to forcing the transmit adapter with no acknowledgement
 at all. The single-carry case is handled correctly.
 
-### `AllowDisruptive` is re-read after the await *(findings-03 F11)*
+### `AllowDisruptive` is re-read after the await *(review 03, F11)*
 
 The request captures it once; the grading note reads the property again after the longest await in
 the app. Untick the box mid-detection and a not-attributable result prints "the forced-speed test,
 which is off" beside an observations row showing it ran — the report contradicting itself about its
 own configuration. Either branch on the captured request value or disable the checkbox while busy.
 
-### `Forget()` leaves pair-specific warnings standing *(findings-03 F12)*
+### `Forget()` leaves pair-specific warnings standing *(review 03, F12)*
 
 `Caveat` and preflight-shaped `ErrorMessage`s are written per pair and cleared only at the start of
 the next detection, so after a pair change the panel says "Topology not checked yet" underneath the
 *old* adapter's vendor-binding caveat. Note the restore warning is correctly kept: it describes the
 journal and an adapter this run pinned, not the cable.
 
-### Post-force failures are all blamed on the driver *(findings-03 F13)*
+### Post-force failures are all blamed on the driver *(review 03, F13)*
 
 The inner catch wraps both `ForceSpeedAsync` and the first `SettleAsync`, and always reports "would
 not take a forced 100 Mbps". A CIM failure inside the settle poll — after the force landed —
 therefore blames the driver for refusing a write it accepted, and a user reasonably stops retrying a
 test that would work.
 
-### `topology.rs`'s module doc still states the pre-correction claim *(findings-03 F19)*
+### `topology.rs`'s module doc still states the pre-correction claim *(review 03, F19)*
 
 It opens with "802.1Q makes each reserved address a permanent filtering-database entry… so a
 conforming relay component drops them", which is what this phase disproved: the block is *not*
@@ -95,7 +102,7 @@ same commit as the README — is the one this line missed.
 
 ## Robustness, latent
 
-### A cancelled detection loses its restore outcome *(findings-03 F9)*
+### A cancelled detection loses its restore outcome *(review 03, F9)*
 
 If an `OperationCanceledException` unwinds through the cleanup, the restore runs correctly but the
 `TopologyDetection` carrying its outcome is never constructed — so a restore that *failed* is
@@ -104,7 +111,7 @@ today because no caller passes a token; it goes live the day anyone adds a Cance
 one-attribute change on `AsyncRelayCommand`.
 
 The un-cancellable tail also includes a second `SettleAsync` on `CancellationToken.None` — up to
-20 s of polling after a "cancelled" detection.
+20 s of polling after a canceled detection.
 
 ### The hardware claim is per-process *(Codex, PR #9)*
 
@@ -113,14 +120,14 @@ instance can start a disruptive detection while another is running a Lab measure
 journal already anticipates concurrent instances with a named mutex, so the precedent and the
 mechanism both exist.
 
-### `sweep::listen` sleeps the full window regardless *(findings-03 F14, CodeRabbit)*
+### `sweep::listen` sleeps the full window regardless *(review 03, F14; also CodeRabbit)*
 
 The coordinator watches only the clock, so a `listen_one` that fails to open its device returns
 immediately and is not joined until the deadline — a three-minute listen with a dead instrument
 costs three minutes before the error appears. `pcap` 2.4 marks `Capture` as `Send`, so the captures
 could be opened and filtered before the window starts and the failure reported at once.
 
-### No teardown path exists *(findings-03 F21)*
+### No teardown path exists *(review 03, F21)*
 
 `LabPage.Dispose` and `RigViewModel.Dispose` have no callers — there is no `Window.Closed` handler —
 so closing the window mid-run relies on process death to release engine threads, NPF handles and the
@@ -128,28 +135,30 @@ journal's named mutex. Consequence today is close to nil, since the OS reclaims 
 runs journal nothing; the cost is that several carefully written drain paths are dead code guarding
 comments that are false.
 
-Related, same finding: `HardwareSession` is single-thread-safe rather than thread-safe (`_holder` is
-written after the CAS, and the idempotence guard is a plain bool). Safe today because every
-claim and release site is on the UI thread — all traced — and its remark about the MVVM toolkit
-marshalling notifications is wrong and should be corrected whether or not the class changes.
+Related, same finding: `HardwareSession`'s claim state is now published atomically, so the
+half-written `IsBusy true / Holder null` window is gone — but the class is still single-thread-safe
+rather than thread-safe: `Claim.Dispose`'s idempotence guard is a plain bool, so an off-UI-thread
+release site added later could double-release across a new claim. Safe today because every claim
+and release site is on the UI thread, all traced. Its remark about the MVVM toolkit marshalling
+notifications is wrong and should be corrected whether or not the class changes.
 
 ---
 
 ## Test fidelity
 
-### `AlreadyAtTarget` is unreachable through the detector tests *(findings-03 F20)*
+### `AlreadyAtTarget` is unreachable through the detector tests *(review 03, F20)*
 
 The `Rig` fake returns only `Applied` or throws, so the stranded-adapter case cannot be produced at
 the detector level. Mitigated rather than dangerous: it is properly covered one level down, in
 `ForcedSpeedAsymmetrySignalTests` and `GuardedAdapterConfiguratorTests`, and the detector only pipes
 the outcome through.
 
-### Three Platform files have no tests *(findings-03 F20)*
+### Three Platform files have no tests *(review 03, F20)*
 
 `NativeEngineLibrary`, `NativeTopologyProbe` and `WindowsSoftwareBridgeProbe`. The positional zip in
 `SweepAsync` is protected only transitively, by the cross-language fixture pin.
 
-### The vanished-adapter fake models the seam backwards *(findings-03 F3, partly fixed)*
+### The vanished-adapter fake models the seam backwards *(review 03, F3 — partly fixed)*
 
 The classification bug is fixed. The fake still has `ReadPropertiesAsync` always succeed and
 `WriteAsync` throw `AdapterNotFoundException`, which is the opposite of the real platform stack — a
@@ -160,7 +169,7 @@ certifies a behaviour the real stack can actually produce.
 
 ## Cosmetic, deliberately deferred
 
-- **Dead public members in the engine** *(F16)*: `Heard::total` and `Protocol::name` have no
+- **Dead public members in the engine** *(review 03, F16)*: `Heard::total` and `Protocol::name` have no
   callers — both `ffi.rs` and `passivecheck.rs` hand-sum and hand-write the strings `name()` exists
   to provide. `LLDP_AND_STP_SECONDS`'s only use is its own const assertion. `pub` items do not trip
   `dead_code`, so clippy stays quiet.

@@ -555,10 +555,16 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             // hook that normally releases the claim never fires. A leaked claim locks topology
             // detection out for the life of the process with nothing on screen to explain it, so
             // the release is anchored to the outcome rather than to any particular exit.
+            //
+            // Through ReleaseHardware, not by disposing the claim directly. Disposing it here
+            // ignored the one condition that decides whether the adapters are actually free, and
+            // there is a path to it: a failed Stop keeps the engine and the claim, the user then
+            // switches to Simulated and presses Start, this method skips TryClaim because the
+            // source is not Hardware, its cleanup fails again - and the direct dispose handed the
+            // adapters away while the old native engine was still transmitting.
             if (!IsRunning)
             {
-                _hardware?.Dispose();
-                _hardware = null;
+                ReleaseHardware();
             }
         }
     }
@@ -785,12 +791,15 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             // Nothing above this can handle it: the caller is an event handler, so an escaping
             // exception terminates the process. An engine that will not shut down is worth
             // reporting, and it is not worth taking the app down over.
-            reason = $"{reason} The engine also failed to shut down: {ex.Message}".TrimStart();
-            _engine = null;
+            // The engine reference is deliberately kept. A disposal that threw has not proven the
+            // transmitter stopped, and ReleaseHardware reads this field to decide whether the
+            // adapters are free - so nulling it here would hand them to topology detection on the
+            // strength of a teardown that failed.
+            reason = $"{reason} The engine also failed to shut down: {ex.Message} The adapters are "
+                + "still treated as in use; restart the app to clear this.";
         }
         finally
         {
-            // The engine reference is gone either way by here, so the claim can go with it.
             ReleaseHardware();
         }
 

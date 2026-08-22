@@ -66,6 +66,11 @@ public sealed record TopologyDetectionRequest
     /// two-consecutive-polls rule meant a test that really waited seconds, so every test zeroed the
     /// timeout instead and the settle rules went untested entirely.
     /// </remarks>
+    /// <remarks>
+    /// Must be positive. Zero would spin the settle loop without yielding, and
+    /// <see cref="Timeout.InfiniteTimeSpan"/> would block it forever - including on the restore
+    /// path, which deliberately runs un-cancellable.
+    /// </remarks>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(500);
 
     /// <summary>The speed the forced-speed probe pins one end to.</summary>

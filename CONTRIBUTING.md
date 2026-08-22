@@ -8,7 +8,7 @@ from the code.
 You need the **.NET 10 SDK** for the app, and for the native engine the **Rust toolchain**, **VS
 Build Tools** and the **Npcap SDK** (a plain zip; the driver itself is a separate install).
 
-```
+```powershell
 dotnet build
 dotnet test
 ```
@@ -22,6 +22,7 @@ problem and is not:
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 $env:LIB  = "C:\path\to\npcap-sdk\Lib\x64;$env:LIB"
+cd engine
 cargo test
 ```
 
@@ -30,6 +31,7 @@ Seven tests in `engine/src/passive.rs` compile and execute real BPF filters, so 
 in every ordinary run. On a machine with Npcap installed, run them:
 
 ```powershell
+cd engine
 cargo test -- --include-ignored
 ```
 

@@ -29,7 +29,15 @@ namespace EthLinkTester.App;
 /// </remarks>
 internal static class HardwareSession
 {
-    private static int _claimed;
+    /// <summary>
+    /// The current holder, or null. One reference, so the state is always self-consistent.
+    /// </summary>
+    /// <remarks>
+    /// A flag plus a separate holder string published them in two steps, and a reader landing
+    /// between the two saw <c>IsBusy</c> true with <c>Holder</c> null - which the topology panel
+    /// turns into a refusal with no message, the least useful thing a refusal can be. One
+    /// atomically exchanged reference cannot be observed half-written.
+    /// </remarks>
     private static string? _holder;
 
     /// <summary>Raised when a claim is taken or released, so commands can re-evaluate.</summary>
@@ -40,10 +48,10 @@ internal static class HardwareSession
     public static event EventHandler? Changed;
 
     /// <summary>True while something is driving the adapters.</summary>
-    public static bool IsBusy => Volatile.Read(ref _claimed) != 0;
+    public static bool IsBusy => Holder is not null;
 
     /// <summary>What holds the claim, in words a user can be shown.</summary>
-    public static string? Holder => Volatile.Read(ref _claimed) == 0 ? null : _holder;
+    public static string? Holder => Volatile.Read(ref _holder);
 
     /// <summary>
     /// Takes the claim, or returns null when something else already holds it.
@@ -56,12 +64,13 @@ internal static class HardwareSession
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
 
-        if (Interlocked.CompareExchange(ref _claimed, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _holder, owner, null) is not null)
         {
             return null;
         }
 
-        _holder = owner;
+        // After the state is published, never before: a handler that re-evaluates a command must
+        // see the claim it is being told about.
         Changed?.Invoke(null, EventArgs.Empty);
 
         return new Claim();
@@ -81,8 +90,7 @@ internal static class HardwareSession
             }
 
             _released = true;
-            _holder = null;
-            Volatile.Write(ref _claimed, 0);
+            Volatile.Write(ref _holder, null);
             Changed?.Invoke(null, EventArgs.Empty);
         }
     }

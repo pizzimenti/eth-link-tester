@@ -57,6 +57,7 @@ public sealed class TopologyDetector
         TopologyDetectionRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(request.PollInterval, TimeSpan.Zero);
 
         var observations = new List<TopologyObservation>();
 
@@ -387,12 +388,20 @@ public sealed class TopologyDetector
                 break;
             }
 
-            if (_time.GetUtcNow() >= deadline)
+            // Never waits past the deadline. A poll interval longer than the timeout would
+            // otherwise wait the whole interval before noticing it had expired - a one-second
+            // timeout waiting thirty - and the restore path runs this with cancellation
+            // deliberately disabled, so an overshoot there is both unbounded and uninterruptible.
+            var remaining = deadline - _time.GetUtcNow();
+
+            if (remaining <= TimeSpan.Zero)
             {
                 break;
             }
 
-            await Task.Delay(request.PollInterval, _time, cancellationToken).ConfigureAwait(false);
+            var wait = remaining < request.PollInterval ? remaining : request.PollInterval;
+
+            await Task.Delay(wait, _time, cancellationToken).ConfigureAwait(false);
         }
 
         // A pair that never came back at all is still a pair: the signal reads a null negotiated
