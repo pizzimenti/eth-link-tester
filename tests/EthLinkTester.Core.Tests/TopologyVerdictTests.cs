@@ -244,4 +244,37 @@ public class TopologyVerdictTests
         Assert.Contains("not established", verdict.Summary, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("cannot be attributed", verdict.Summary, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// The printed basis has to argue for the conclusion, not merely be the strongest thing in the
+    /// list.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Ordered</c> ranks by strength, so a Direct/Strong observation sorts ahead of a
+    /// Bridged/Suggestive one while <c>From</c> still concludes Bridged - and the summary then read
+    /// "A switch or bridge is in the path" followed by the detail of a signal arguing for a direct
+    /// cable. The sibling test above fixed the other half of this method, where the basis was the
+    /// *weakest* agreeing signal; this is the half that was left.
+    /// </para>
+    /// <para>
+    /// Two reviewers disagreed about whether this was reachable - one called it unreachable by
+    /// enum-order coincidence, the other reproduced it. Running it settled the argument, which on
+    /// this project it usually does.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Summary_CitesASignalThatAgreesWithTheConclusion()
+    {
+        var direct = Says(
+            TopologySignal.ForcedSpeedAsymmetry, TopologyFinding.Direct, SignalStrength.Strong);
+        var bridged = Says(
+            TopologySignal.BridgeProtocolTraffic, TopologyFinding.Bridged, SignalStrength.Suggestive);
+
+        var verdict = TopologyVerdict.From([direct, bridged]);
+
+        Assert.Equal(TopologyConclusion.Bridged, verdict.Conclusion);
+        Assert.Contains(bridged.Detail, verdict.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain(direct.Detail, verdict.Summary, StringComparison.Ordinal);
+    }
 }

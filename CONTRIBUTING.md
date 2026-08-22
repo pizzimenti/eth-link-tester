@@ -5,15 +5,33 @@ from the code.
 
 ## Getting a build
 
-You need the **.NET 10 SDK**. Nothing else, until Phase 3.
+You need the **.NET 10 SDK** for the app, and for the native engine the **Rust toolchain**, **VS
+Build Tools** and the **Npcap SDK** (a plain zip; the driver itself is a separate install).
 
 ```
 dotnet build
 dotnet test
 ```
 
-Visual Studio is *not* required — the app builds with the SDK alone. Rust and VS Build Tools are
-only needed once the native engine lands in Phase 3.
+Visual Studio is *not* required — the app builds with the SDK alone.
+
+Building the engine needs two environment variables that a fresh shell does not have. Without the
+second, linking fails with `LNK1181: cannot open input file 'wpcap.lib'`, which reads like a code
+problem and is not:
+
+```powershell
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+$env:LIB  = "C:\path\to\npcap-sdk\Lib\x64;$env:LIB"
+cargo test
+```
+
+Seven tests in `engine/src/passive.rs` compile and execute real BPF filters, so they need the Npcap
+**driver** rather than just the SDK. They are `#[ignore]`d for that reason and appear as `7 ignored`
+in every ordinary run. On a machine with Npcap installed, run them:
+
+```powershell
+cargo test -- --include-ignored
+```
 
 ## You do not need hardware
 
@@ -30,7 +48,7 @@ Three files pin the toolchain, and they should be edited deliberately rather tha
 |---|---|
 | `global.json` | .NET SDK feature band |
 | `Directory.Packages.props` | Every NuGet version (central package management) |
-| `rust-toolchain.toml` | Rust compiler (from Phase 3) |
+| `rust-toolchain.toml` | Rust compiler |
 
 Because versions are centrally managed, **`PackageReference` entries must not carry a `Version`
 attribute** — add the version to `Directory.Packages.props` instead.
@@ -46,6 +64,7 @@ requirements are met, not at a fixed patch number.
 ## Project layout
 
 ```
+docs/FOLLOWUPS.md            known defects and deferrals, with what each one costs
 src/EthLinkTester.Core       platform-neutral models, abstractions, orchestration, grading
 src/EthLinkTester.Platform   the Windows half - CIM, NDIS properties, Npcap, the native engine host
 src/EthLinkTester.App        WinUI 3 shell

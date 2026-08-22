@@ -78,7 +78,7 @@ public sealed class NativeTopologyProbe : ITopologyProbe
 
         var device = (Transmit: _resolveDevice(transmitAdapterId),
                       Receive: _resolveDevice(receiveAdapterId));
-        var mac = _resolveMac(transmitAdapterId);
+        var mac = SixBytes(_resolveMac(transmitAdapterId), transmitAdapterId);
 
         return Task.Run<IReadOnlyList<ProbeResult>>(
             () =>
@@ -116,7 +116,7 @@ public sealed class NativeTopologyProbe : ITopologyProbe
         }
 
         var devices = adapterIds.Select(_resolveDevice).ToArray();
-        var macs = adapterIds.Select(_resolveMac).ToArray();
+        var macs = adapterIds.Select(id => SixBytes(_resolveMac(id), id)).ToArray();
         var seconds = (uint)Math.Max(0, Math.Round(window.TotalSeconds));
 
         return Task.Run(
@@ -136,6 +136,23 @@ public sealed class NativeTopologyProbe : ITopologyProbe
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// Checks a resolved MAC before it becomes a raw pointer.
+    /// </summary>
+    /// <remarks>
+    /// The native entry points read six bytes from each MAC pointer unconditionally - the ABI
+    /// carries no length - so a shorter array is an over-read across the FFI boundary and a longer
+    /// one silently truncates. The resolver is a caller-supplied delegate, which makes its output
+    /// exactly the kind of input this side should not assume about.
+    /// </remarks>
+    private static byte[] SixBytes(byte[] mac, string adapterId) =>
+        mac is { Length: 6 }
+            ? mac
+            : throw new InvalidOperationException(
+                $"The hardware address resolved for {adapterId} is "
+                + $"{(mac is null ? "null" : $"{mac.Length} bytes")}, and the engine reads six. "
+                + "Nothing was sent.");
 
     private static string Describe(int code) => NativeEngineLibrary.Describe(code);
 

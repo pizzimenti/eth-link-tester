@@ -788,6 +788,11 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             reason = $"{reason} The engine also failed to shut down: {ex.Message}".TrimStart();
             _engine = null;
         }
+        finally
+        {
+            // The engine reference is gone either way by here, so the claim can go with it.
+            ReleaseHardware();
+        }
 
         IsRunning = false;
         OnPropertyChanged(nameof(IsSimulated));
@@ -818,11 +823,26 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
             if (_engine is not null)
             {
                 await _engine.StopAsync();
+
+                // Disposed rather than merely dereferenced: nulling the field alone would strand
+                // the native handle for the life of the process. This is also what releases the
+                // adapter claim, since it is the only place the engine is confirmed gone.
+                await DisposeEngineAsync();
             }
         }
         catch (Exception ex)
         {
-            ErrorMessage = $"The run did not stop cleanly: {ex.Message}";
+            // The engine reference is kept, not nulled: it may still be transmitting, and
+            // ReleaseHardware reads that reference to decide whether the adapters are free.
+            // The engine reference is deliberately kept. It may still be transmitting, and
+            // ReleaseHardware reads that reference to decide whether the adapters are free - so
+            // holding it is what keeps topology detection from forcing a speed under live traffic.
+            // The cost is a dead end, so the remedy is named rather than left to be discovered.
+            ErrorMessage =
+                $"The run did not stop cleanly: {ex.Message} The adapters are still treated as in "
+                + "use, so no new run or topology detection can start. Restart the app to clear "
+                + "this; any adapter settings a run changed are in the restore journal and will be "
+                + "put back on the next launch.";
         }
         finally
         {
@@ -843,9 +863,38 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
     {
         if (!value)
         {
-            _hardware?.Dispose();
-            _hardware = null;
+            ReleaseHardware();
         }
+    }
+
+    /// <summary>
+    /// Releases the adapter claim, but only once the engine is genuinely gone.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A stopped UI is not a stopped engine.</b> Both <c>StopAsync</c> and the fault handler
+    /// clear <see cref="IsRunning"/> unconditionally - deliberately, because leaving the button in
+    /// its running state would strand the user with no way to try again - and both can reach that
+    /// point with <c>_engine.StopAsync()</c> having thrown. This file's own remarks treat that as
+    /// realistic: "An engine that will not shut down is worth reporting." A wedged engine may still
+    /// be transmitting at line rate.
+    /// </para>
+    /// <para>
+    /// Releasing the claim there would light up the Detect button and let topology detection force
+    /// <c>*SpeedDuplex</c> under live traffic, mid-fault - exactly the collision the claim exists to
+    /// prevent, arriving at the worst possible moment. So the claim outlives the flag: it is
+    /// released when <c>_engine</c> is null, and held otherwise with the holder string saying why.
+    /// </para>
+    /// </remarks>
+    private void ReleaseHardware()
+    {
+        if (_engine is not null)
+        {
+            return;
+        }
+
+        _hardware?.Dispose();
+        _hardware = null;
     }
 
     private bool CanStart() =>
@@ -865,6 +914,7 @@ internal sealed partial class LabViewModel : ObservableObject, IDisposable
         {
             await _engine.DisposeAsync();
             _engine = null;
+            ReleaseHardware();
         }
     }
 }

@@ -67,28 +67,63 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
         // device names and MACs from the list this page is holding at the time. Resolving them
         // twice, from two enumerations taken at different moments, is how two components come to
         // disagree about which adapter is which.
+        // Re-probe re-enumerates the adapters, and a detection in flight is holding two of them
+        // and may be restarting a miniport - which takes an adapter out of the CIM enumeration
+        // entirely, so a refresh landing mid-detection can degrade the rig card to "only one
+        // physical Ethernet adapter" about hardware that is present and working.
+        HardwareSession.Changed += (_, _) => RefreshCommand.NotifyCanExecuteChanged();
+
         Topology = new TopologyViewModel(
             provider,
             configurator,
             new WindowsSoftwareBridgeProbe(),
             pair => new NativeTopologyProbe(
                 NativePacketEngine.DeviceName,
-                id => ParseMac(pair.First(a => a.Id == id).MacAddress)));
+                id =>
+                {
+                    var adapter = pair.First(a => a.Id == id);
+                    return ParseMac(adapter.Name, adapter.MacAddress);
+                }));
     }
 
     /// <summary>Whether these two adapters are wired to each other, and what says so.</summary>
     public TopologyViewModel Topology { get; }
 
     /// <summary>
-    /// Turns the provider's dashed MAC into the six bytes the engine puts in a frame header.
+    /// Turns the provider's MAC into the six bytes the engine puts in a frame header.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Colons as well as dashes, because the two spellings both reach this app: the CIM provider
     /// gives dashes and every command-line tool on the machine prints colons, so a user pasting one
     /// in is the ordinary case rather than the odd one.
+    /// </para>
+    /// <para>
+    /// <b>Validated rather than parsed hopefully.</b> An adapter whose address the provider could
+    /// not read comes through as an empty string, and one written without separators comes through
+    /// as a single twelve-character part; both reach <c>byte.Parse</c> and surface as a bare
+    /// <c>FormatException</c> that names neither the adapter nor the field. Worse, a wrong octet
+    /// count parses cleanly and produces an array the native side reads six bytes from regardless -
+    /// so an address of four octets is a buffer over-read at an FFI boundary, and one of eight is a
+    /// frame sent from an address nobody chose.
+    /// </para>
     /// </remarks>
-    private static byte[] ParseMac(string address) =>
-        [.. address.Split('-', ':').Select(part => byte.Parse(part, NumberStyles.HexNumber))];
+    /// <exception cref="InvalidOperationException">The address is not six hexadecimal octets.</exception>
+    private static byte[] ParseMac(string adapterName, string address)
+    {
+        var parts = (address ?? string.Empty).Split('-', ':');
+
+        if (parts.Length != 6
+            || !parts.All(p => byte.TryParse(p, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _)))
+        {
+            throw new InvalidOperationException(
+                $"{adapterName} reports its hardware address as '{address}', which is not six "
+                + "hexadecimal octets. The engine puts this address in every frame it sends, so it "
+                + "cannot run against this adapter.");
+        }
+
+        return [.. parts.Select(p => byte.Parse(p, NumberStyles.HexNumber, CultureInfo.InvariantCulture))];
+    }
 
     /// <summary>
     /// Machine-wide rather than per-user, because a run can outlive the session that started it
@@ -158,7 +193,16 @@ internal sealed partial class RigViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(HasError))]
     public partial string? ErrorMessage { get; set; }
 
-    public bool IsIdle => !IsBusy;
+    /// <summary>
+    /// True when nothing this page owns is running <i>and</i> nothing else is driving the adapters.
+    /// </summary>
+    /// <remarks>
+    /// The second half matters because Re-probe re-enumerates hardware that a detection may be in
+    /// the middle of restarting. Writing <c>*SpeedDuplex</c> takes an adapter out of the CIM
+    /// enumeration for a moment, so a refresh landing in that window reports a rig with one NIC and
+    /// junk capabilities about hardware that is present and working.
+    /// </remarks>
+    public bool IsIdle => !IsBusy && !HardwareSession.IsBusy;
 
     public bool HasRecoveryMessage => !string.IsNullOrEmpty(RecoveryMessage);
 

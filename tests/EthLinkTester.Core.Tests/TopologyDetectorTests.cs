@@ -41,6 +41,26 @@ public class TopologyDetectorTests
         /// <summary>What the far end does when the near end is forced. Set per test.</summary>
         public Action<Rig>? OnForce { get; set; }
 
+        /// <summary>Adapter reads so far, so a test can make the hardware change under the poll.</summary>
+        public int Reads { get; private set; }
+
+        /// <summary>Run on every read, so a test can script what the poll sees over time.</summary>
+        public Action<Rig, int>? OnRead { get; set; }
+
+        /// <summary>
+        /// The detector's clock, advanced one poll interval per read.
+        /// </summary>
+        /// <remarks>
+        /// Without this the settle loop never terminates: <c>TestClock</c> is frozen by design, so
+        /// a deadline computed from it is never reached however many times the loop polls. Reading
+        /// the adapters is what the loop does between waits, so charging a poll interval to each
+        /// read is both the simplest hook and a fair model of the thing being tested.
+        /// </remarks>
+        public TestClock Clock { get; init; } = new();
+
+        /// <summary>How much to advance per read. Zero for the tests that do not poll.</summary>
+        public TimeSpan TickPerRead { get; set; }
+
         /// <summary>Set to make the driver refuse the forced setting.</summary>
         public string? ForceRefusal { get; set; }
 
@@ -60,11 +80,28 @@ public class TopologyDetectorTests
 
         public List<RestoreScope> Restores { get; } = [];
 
+        /// <summary>Adapters the scope actually reached, as opposed to those merely forced.</summary>
+        public List<string> Restored { get; } = [];
+
+        /// <summary>The journal entry a forced adapter would have left behind.</summary>
+        private static PendingRestore Entry(string adapterId) => new()
+        {
+            AdapterId = adapterId,
+            AdapterName = adapterId,
+            PropertyKeyword = WellKnownKeywords.SpeedDuplex,
+            OriginalValue = "0",
+            RecordedUtc = DateTimeOffset.UnixEpoch,
+        };
+
         public long TimestampFrequency => TimeSpan.TicksPerSecond;
 
         public Task<IReadOnlyList<NetworkAdapterInfo>> GetPhysicalAdaptersAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<NetworkAdapterInfo>>(
+            CancellationToken cancellationToken = default)
+        {
+            OnRead?.Invoke(this, ++Reads);
+            Clock.Advance(TickPerRead);
+
+            return Task.FromResult<IReadOnlyList<NetworkAdapterInfo>>(
             [
                 .. Speeds.Select(pair => new NetworkAdapterInfo
                 {
@@ -78,6 +115,7 @@ public class TopologyDetectorTests
                     CarriesDefaultRoute = DefaultRoute.Contains(pair.Key),
                 }),
             ]);
+        }
 
         public Task<AdapterCapabilities> ProbeCapabilitiesAsync(
             string adapterId, CancellationToken cancellationToken = default) =>
@@ -169,10 +207,15 @@ public class TopologyDetectorTests
                 });
             }
 
-            foreach (var id in Forced)
+            // The scope is honoured rather than ignored, which is the whole point of the seam: the
+            // detector's only contribution here is naming an adapter and a keyword, and a fake that
+            // restores everything regardless certifies nothing about either. Pointing the restore
+            // at the wrong adapter used to pass all 288 tests.
+            foreach (var id in Forced.Where(id => scope.Includes(Entry(id))))
             {
                 Speeds[id] = Gigabit;
                 Duplex[id] = DuplexMode.Full;
+                Restored.Add(id);
             }
 
             return Task.FromResult(RestoreOutcome.Empty);
@@ -182,7 +225,7 @@ public class TopologyDetectorTests
     private static (Rig Rig, TopologyDetector Detector) Build()
     {
         var rig = new Rig();
-        return (rig, new TopologyDetector(rig, rig, rig, new TestClock()));
+        return (rig, new TopologyDetector(rig, rig, rig, rig.Clock));
     }
 
     private static TopologyDetectionRequest Request(
@@ -193,6 +236,23 @@ public class TopologyDetectorTests
         AllowDisruptive = disruptive,
         PassiveWindow = passive ?? TimeSpan.Zero,
         LinkSettleTimeout = TimeSpan.Zero,
+    };
+
+    /// <summary>
+    /// A request that actually polls, for the tests that exercise the settle rules.
+    /// </summary>
+    /// <remarks>
+    /// A millisecond interval against a generous timeout: the loop's shape is what is under test,
+    /// not the durations, and a real 500 ms poll would put seconds on the suite.
+    /// </remarks>
+    private static TopologyDetectionRequest PollingRequest() => new()
+    {
+        TransmitAdapterId = TxId,
+        ReceiveAdapterId = RxId,
+        AllowDisruptive = true,
+        PassiveWindow = TimeSpan.Zero,
+        LinkSettleTimeout = TimeSpan.FromSeconds(5),
+        PollInterval = TimeSpan.FromMilliseconds(1),
     };
 
     private static void CrossingSweep(Rig rig) =>
@@ -315,6 +375,12 @@ public class TopologyDetectorTests
 
         var restore = Assert.Single(rig.Restores);
         Assert.False(restore.IsEverything);
+
+        // The identity, not just the shape. A scope naming the wrong adapter or the wrong keyword
+        // is still "not Everything", and against the real configurator it matches zero journal
+        // entries: the forced port stays pinned, the restore reports success with no failures, and
+        // nobody is told until the next launch.
+        Assert.Equal([TxId], rig.Restored);
         Assert.Equal(Gigabit, rig.Speeds[TxId]);
     }
 
@@ -499,6 +565,119 @@ public class TopologyDetectorTests
         Assert.Null(detection.Restore);
         Assert.False(detection.RestoreNeedsAttention);
         Assert.Null(detection.RestoreWarning);
+    }
+
+    /// <summary>
+    /// The free end reporting a stale speed on its first poll must not read as "did not link".
+    /// </summary>
+    /// <remarks>
+    /// This is the hardware-found bug from the rig, in a test. Writing <c>*SpeedDuplex</c> restarts
+    /// the miniport and bounces the link at <i>both</i> ends, so a pair read taken the moment the
+    /// forced end reports its target catches the other one still down - and the detector said "the
+    /// far end did not link" about a cable that was linked the whole time. The two-consecutive-polls
+    /// rule is what fixed it, and every test set <c>LinkSettleTimeout = Zero</c>, so deleting that
+    /// rule passed all 288.
+    /// </remarks>
+    [Fact]
+    public async Task AFreeEndThatIsStillSettling_IsWaitedForRatherThanCalledDark()
+    {
+        var (rig, detector) = Build();
+        CrossingSweep(rig);
+        rig.TickPerRead = TimeSpan.FromMilliseconds(500);
+
+        rig.OnForce = r =>
+        {
+            // Both ends bounce, which is what the miniport restart really does.
+            r.Speeds[TxId] = 0;
+            r.Speeds[RxId] = 0;
+        };
+
+        rig.OnRead = (r, n) =>
+        {
+            // Comes back over successive polls: forced end first, free end a beat later.
+            if (n >= 3)
+            {
+                r.Speeds[TxId] = Fast;
+            }
+
+            if (n >= 4)
+            {
+                r.Speeds[RxId] = Fast;
+                r.Duplex[RxId] = DuplexMode.Half;
+            }
+        };
+
+        var verdict = (await detector.DetectAsync(PollingRequest())).Verdict;
+
+        Assert.Equal(TopologyConclusion.Direct, verdict.Conclusion);
+        Assert.DoesNotContain(
+            "did not link",
+            verdict.Observations.Single(o => o.Signal == TopologySignal.ForcedSpeedAsymmetry).Detail,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A driver that takes the write and keeps negotiating is waited for, not read early.
+    /// </summary>
+    /// <remarks>
+    /// Returning on first link would hand the signal a reading taken before the PHY had settled,
+    /// making an honest driver look like the dishonest one this rig actually owns.
+    /// </remarks>
+    [Fact]
+    public async Task TheForcedEndIsWaitedForUntilItReachesTheTarget()
+    {
+        var (rig, detector) = Build();
+        CrossingSweep(rig);
+        rig.TickPerRead = TimeSpan.FromMilliseconds(500);
+
+        rig.OnForce = r => r.Speeds[TxId] = Gigabit;
+        rig.OnRead = (r, n) =>
+        {
+            if (n >= 4)
+            {
+                r.Speeds[TxId] = Fast;
+                r.Speeds[RxId] = Fast;
+                r.Duplex[RxId] = DuplexMode.Half;
+            }
+        };
+
+        var verdict = (await detector.DetectAsync(PollingRequest())).Verdict;
+
+        Assert.Equal(TopologyConclusion.Direct, verdict.Conclusion);
+    }
+
+    /// <summary>
+    /// Cancelling mid-settle still restores the adapter.
+    /// </summary>
+    /// <remarks>
+    /// The only executions where the restore's <c>finally</c> changes behaviour are a cancellation -
+    /// deliberately excluded from the inner catch - and a throw from the catch itself. Nothing
+    /// cancelled, so dissolving the try/finally into straight-line code passed all 288 tests: the
+    /// block that exists to keep a cancelled run from stranding a pinned adapter was uncovered.
+    /// </remarks>
+    [Fact]
+    public async Task CancellingDuringTheSettle_StillRestores()
+    {
+        var (rig, detector) = Build();
+        CrossingSweep(rig);
+
+        using var cancellation = new CancellationTokenSource();
+        rig.TickPerRead = TimeSpan.FromMilliseconds(500);
+
+        rig.OnForce = r => r.Speeds[RxId] = 0;
+        rig.OnRead = (_, n) =>
+        {
+            if (n >= 3)
+            {
+                cancellation.Cancel();
+            }
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => detector.DetectAsync(PollingRequest(), cancellation.Token));
+
+        Assert.Equal([TxId], rig.Restored);
+        Assert.Equal(Gigabit, rig.Speeds[TxId]);
     }
 
     /// <summary>The verdict knows which pair it describes and when it was taken.</summary>

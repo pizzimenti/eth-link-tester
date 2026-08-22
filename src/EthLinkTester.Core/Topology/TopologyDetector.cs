@@ -36,14 +36,6 @@ public sealed class TopologyDetector
     private readonly ITopologyProbe _probe;
     private readonly TimeProvider _time;
 
-    /// <summary>How often to re-read the adapters while waiting for a link to settle.</summary>
-    /// <remarks>
-    /// A CIM read of every physical adapter costs tens of milliseconds, and a PHY takes seconds to
-    /// negotiate, so polling faster than this buys nothing and polling much slower adds latency to
-    /// a probe that is already the slow one.
-    /// </remarks>
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
-
     public TopologyDetector(
         IAdapterProvider adapters,
         IAdapterConfigurator configurator,
@@ -68,11 +60,8 @@ public sealed class TopologyDetector
 
         var observations = new List<TopologyObservation>();
 
-        var (transmit, receive) = await ReadPairAsync(request, cancellationToken)
-            .ConfigureAwait(false);
-
         // Free, and the only signal that costs nothing at all - the numbers are already on screen.
-        observations.Add(LinkSpeedSignal.Observe(transmit, receive));
+        observations.Add(await CompareSpeedsAsync(request, cancellationToken).ConfigureAwait(false));
 
         observations.Add(await SweepAsync(request, cancellationToken).ConfigureAwait(false));
         observations.Add(await ListenAsync(request, cancellationToken).ConfigureAwait(false));
@@ -103,6 +92,66 @@ public sealed class TopologyDetector
         };
 
         return new TopologyDetection(verdict, restore);
+    }
+
+    /// <summary>
+    /// Compares the two ports' speeds, confirming a mismatch before reporting one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two reads, because the first one is not evidence on its own.</b>
+    /// <see cref="LinkSpeedSignal"/> calls a mismatch <see cref="SignalStrength.Conclusive"/> - the
+    /// alternative is physically impossible, since one cable carries one link - and its own remarks
+    /// name the gap: the physics is exact but the evidence is two CIM queries milliseconds apart,
+    /// and a link retraining between them fabricates a mismatch on a bare cable. That prescription
+    /// sat in the signal's documentation while the orchestrator read once and promoted straight to
+    /// Conclusive.
+    /// </para>
+    /// <para>
+    /// It compounds, which is what lifts it from a cosmetic worry: a Conclusive bridge suppresses
+    /// the forced-speed probe - correctly, since bouncing a link to re-prove a settled point is
+    /// pure risk - so the same unconfirmed reading also removes the one signal that could have
+    /// refuted it. A downshift under thermal stress is the fault this tool exists to find, and it
+    /// is exactly the transient that produces this.
+    /// </para>
+    /// <para>
+    /// Agreement is not re-read. A matching pair is already Inconclusive and costs nothing to be
+    /// wrong about, so the extra query is spent only where it changes an answer.
+    /// </para>
+    /// </remarks>
+    private async Task<TopologyObservation> CompareSpeedsAsync(
+        TopologyDetectionRequest request, CancellationToken cancellationToken)
+    {
+        var (transmit, receive) = await ReadPairAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        var first = LinkSpeedSignal.Observe(transmit, receive);
+
+        if (first.Finding != TopologyFinding.Bridged)
+        {
+            return first;
+        }
+
+        await Task.Delay(request.PollInterval, _time, cancellationToken).ConfigureAwait(false);
+
+        var (transmitAgain, receiveAgain) = await ReadPairAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        var second = LinkSpeedSignal.Observe(transmitAgain, receiveAgain);
+
+        if (second.Finding == TopologyFinding.Bridged)
+        {
+            return second;
+        }
+
+        // A mismatch that did not survive a second look is a link that moved, not two links. Said
+        // plainly rather than swallowed: a retrain during a measurement is itself worth knowing,
+        // and it is the reason the disruptive probe is about to run after all.
+        return TopologyObservation.Nothing(
+            TopologySignal.LinkSpeedMismatch,
+            "The two ports read different speeds and then agreed a moment later, so a link was "
+            + "changing speed while they were read rather than there being two separate links. "
+            + "A single reading is not evidence about a topology, and this one has been discarded.");
     }
 
     private async Task<TopologyObservation> SweepAsync(
@@ -284,11 +333,14 @@ public sealed class TopologyDetector
     /// ends back at 100 Mbps within a second and a half; the detector said one of them was dark.
     /// </para>
     /// <para>
-    /// The free end has to report the same speed on two consecutive polls, which closes the
+    /// The free end has to report the same speed on two consecutive polls, which narrows the
     /// opposite hazard: a stale reading taken before the restart shows the <i>old</i> speed and
-    /// looks perfectly healthy, so "has a link" alone would happily proceed on a pre-force value.
-    /// It also gives the free-end reading the read-settle-reread confirmation that
-    /// <see cref="LinkSpeedSignal"/>'s Conclusive verdict has always wanted and never had.
+    /// looks perfectly healthy, so "has a link" alone would proceed on a pre-force value. It
+    /// narrows rather than closes it - two consecutive stale reads would still satisfy the rule -
+    /// and what makes that unlikely in practice is the conjunction: the loop returns only when the
+    /// forced end has also reached its target, which means the miniport restart has completed. A
+    /// reading confirmed against a completed restart is a different thing from a reading confirmed
+    /// against a clock.
     /// </para>
     /// <para>
     /// Waiting for the forced end to reach the <i>expected</i> speed rather than merely to link
@@ -340,7 +392,7 @@ public sealed class TopologyDetector
                 break;
             }
 
-            await Task.Delay(PollInterval, _time, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(request.PollInterval, _time, cancellationToken).ConfigureAwait(false);
         }
 
         // A pair that never came back at all is still a pair: the signal reads a null negotiated

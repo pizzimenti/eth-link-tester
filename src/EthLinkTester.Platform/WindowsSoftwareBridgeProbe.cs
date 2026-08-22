@@ -31,8 +31,22 @@ namespace EthLinkTester.Platform;
 /// </remarks>
 public sealed class WindowsSoftwareBridgeProbe : ISoftwareBridgeProbe
 {
+    /// <summary>
+    /// Reads the adapter's bindings, off the calling thread.
+    /// </summary>
+    /// <remarks>
+    /// The CIM queries are synchronous and there is no asynchronous MI overload worth the
+    /// complexity here, so the work is pushed to the pool rather than dressed up: returning
+    /// <c>Task.FromResult</c> around blocking provider calls froze the UI thread for the length of
+    /// four queries at the very moment the user pressed a button, and made the cancellation token a
+    /// decoration. Preflight runs twice per detection, once per adapter.
+    /// </remarks>
     public Task<SoftwareBridgeStatus> InspectAsync(
-        string adapterId, CancellationToken cancellationToken = default)
+        string adapterId, CancellationToken cancellationToken = default) =>
+        Task.Run(() => Inspect(adapterId, cancellationToken), cancellationToken);
+
+    private static SoftwareBridgeStatus Inspect(
+        string adapterId, CancellationToken cancellationToken)
     {
         var instanceId = Cim.ToInstanceId(adapterId);
 
@@ -42,6 +56,10 @@ public sealed class WindowsSoftwareBridgeProbe : ISoftwareBridgeProbe
 
         try
         {
+            // Between the two queries, because the second is the one that can be skipped: a
+            // cancellation noticed here saves the LBFO round trip.
+            cancellationToken.ThrowIfCancellationRequested();
+
             var read = bindings
                 .Select(b => new AdapterBinding(
                     Cim.Text(b, "ComponentID") ?? string.Empty,
@@ -49,8 +67,7 @@ public sealed class WindowsSoftwareBridgeProbe : ISoftwareBridgeProbe
                     Cim.Prop(b, "Enabled") as bool? == true))
                 .ToList();
 
-            return Task.FromResult(
-                SoftwareBridgeStatus.From(adapterId, read, AnyTeamExists()));
+            return SoftwareBridgeStatus.From(adapterId, read, AnyTeamExists());
         }
         finally
         {

@@ -55,6 +55,19 @@ public sealed record TopologyDetectionRequest
     /// </remarks>
     public TimeSpan LinkSettleTimeout { get; init; } = TimeSpan.FromSeconds(20);
 
+    /// <summary>
+    /// How often to re-read the adapters while waiting for a link to settle.
+    /// </summary>
+    /// <remarks>
+    /// A CIM read of every physical adapter costs tens of milliseconds and a PHY takes seconds to
+    /// negotiate, so polling faster than this buys nothing and much slower adds latency to the probe
+    /// that is already the slow one. On the request rather than a constant because it is the only
+    /// thing standing between the settle logic and a test suite: with a fixed 500 ms, covering the
+    /// two-consecutive-polls rule meant a test that really waited seconds, so every test zeroed the
+    /// timeout instead and the settle rules went untested entirely.
+    /// </remarks>
+    public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(500);
+
     /// <summary>The speed the forced-speed probe pins one end to.</summary>
     /// <remarks>
     /// 100 full duplex, and it cannot usefully be anything above 100: IEEE 802.3 requires

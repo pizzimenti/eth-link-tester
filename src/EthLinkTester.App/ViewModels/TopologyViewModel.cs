@@ -296,8 +296,28 @@ internal sealed partial class TopologyViewModel : ObservableObject
                 AllowDisruptive = AllowDisruptive,
             });
 
+            // The pair moved while this was running, so everything below would describe a cable
+            // that is no longer the one on screen. SetPair has already cleared the panel; painting
+            // a verdict over it is precisely the "reading from one cable standing next to another"
+            // that clearing exists to prevent. Snapshotting the pair (which stopped the probe
+            // *mixing* adapters) does not help here - the publication is the unguarded half.
+            if (!ReferenceEquals(pair, _pair))
+            {
+                // The restore warning is the exception: it describes the journal and an adapter
+                // this run pinned, not the cable, so it outlives the pair that produced it.
+                if (detection.RestoreNeedsAttention)
+                {
+                    ErrorMessage = detection.RestoreWarning;
+                }
+
+                return;
+            }
+
             var verdict = detection.Verdict;
 
+            // Published before the pair check above? No - deliberately after. A restore warning is
+            // about the journal and the machine rather than about the cable, so it survives a pair
+            // change; but it is set here, inside the guard, and re-surfaced below if we bail.
             // A port this run pinned and could not put back is worth more of the user's attention
             // than the verdict is. The journal will replay it on the next launch, which only helps
             // someone who knows there is something to replay.
@@ -321,11 +341,15 @@ internal sealed partial class TopologyViewModel : ObservableObject
             Detail = verdict.Summary;
 
             // Informational rather than Success for Direct: this is a measurement, and dressing a
-            // measurement as a congratulation invites it to be read as a pass.
+            // measurement as a congratulation invites it to be read as a pass. The comment and the
+            // code arrived in one commit contradicting each other - the code said Success - and two
+            // reviewers flagged it independently without being able to tell which was intended.
+            // The comment wins because it states a principle the rest of the app follows: grading
+            // here is never pass/fail. Bridged stays a Warning because it is one: it means nothing
+            // measured afterwards can be attributed to a cable.
             Severity = verdict.Conclusion switch
             {
                 TopologyConclusion.Bridged => InfoBarSeverity.Warning,
-                TopologyConclusion.Direct => InfoBarSeverity.Success,
                 _ => InfoBarSeverity.Informational,
             };
 

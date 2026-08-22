@@ -189,23 +189,28 @@ mod tests {
         }
     }
 
-    /// Whether libpcap can be reached at all, reported rather than silently assumed.
+    /// Fails the test when Npcap is missing, rather than passing quietly.
     ///
-    /// These tests need libpcap's own compiler and matcher - a reimplementation would be testing
-    /// the reimplementation - and that means `wpcap.dll`, which Npcap's licence forbids
-    /// redistributing and which CI therefore does not have. They run on any machine with Npcap
-    /// installed, which is every machine that can run this tool at all, and print why when they do
-    /// not. A quiet skip in a module about filters that fail quietly would be its own joke.
-    fn libpcap_available() -> bool {
-        if crate::diag::ensure_npcap() {
-            return true;
-        }
-
-        eprintln!(
-            "SKIPPED: Npcap is not installed, so libpcap's filter compiler cannot be reached. \
-             These assertions run wherever the tool itself can run."
+    /// **These tests are `#[ignore]`d and that is the honest arrangement.** They need libpcap's own
+    /// compiler and matcher - a reimplementation would be testing the reimplementation - and so they
+    /// need `wpcap.dll`, which Npcap's licence forbids redistributing and CI therefore does not
+    /// have.
+    ///
+    /// The previous arrangement returned early with an `eprintln!`, which was worse than it looked:
+    /// libtest captures the output of *passing* tests, so the message was never printed and the
+    /// seven filter tests counted as passes. `61 passed; 0 ignored` on a machine with Npcap and
+    /// `61 passed; 0 ignored` on one without - byte-identical, indistinguishable, and CI has been
+    /// in the second state since these tests landed. A module whose entire subject is filters that
+    /// fail silently had tests that failed silently.
+    ///
+    /// `#[ignore]` makes the state visible in every run's summary line and impossible to fake, and
+    /// this assertion makes an explicitly-requested run fail loudly rather than skip. Run them with
+    /// `cargo test -- --include-ignored`, which is what the bench rig does.
+    fn require_libpcap() {
+        assert!(
+            crate::diag::ensure_npcap(),
+            "these tests exercise libpcap's real compiler and matcher, so they need Npcap              installed. They are #[ignore]d for that reason - running them explicitly on a machine              without it is a mistake, not a skip."
         );
-        false
     }
 
     /// Runs `filter` over `packets` and returns how many it matched.
@@ -268,10 +273,9 @@ mod tests {
 
     /// Each protocol filter matches its own protocol and nothing else in the set.
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn every_filter_matches_exactly_its_own_protocol() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         let packets = one_of_each(frames::OTHER_MAC);
 
@@ -286,10 +290,9 @@ mod tests {
     /// that the constants did not *contain* the bad spellings - which says nothing about whether
     /// what they do contain works.
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn the_wrong_spellings_compile_and_match_nothing() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         let packets = one_of_each(frames::OTHER_MAC);
 
@@ -303,10 +306,9 @@ mod tests {
 
     /// The plain LLDP filter misses tagged LLDP, and the tagged one catches both.
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn a_vlan_tag_hides_lldp_from_the_plain_filter() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         let tagged = vec![frames::tagged_lldp(frames::OTHER_MAC)];
         let both = vec![
@@ -320,10 +322,9 @@ mod tests {
 
     /// The combined filter catches all three protocols and nothing else.
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn the_combined_filter_matches_all_three_and_nothing_else() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         let packets = one_of_each(frames::OTHER_MAC);
 
@@ -342,10 +343,9 @@ mod tests {
     /// copy nothing compared against the other three. This keeps the old form as a fixture so the
     /// replacement is a refactor and can be seen to be one.
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn the_combined_filter_agrees_with_the_hand_factored_form() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         const HAND_FACTORED: &str = "ether proto 0x88cc or (ether[12:2] <= 1500 \
                                      and (ether[14:2] = 0x4242 or (ether[14:2] = 0xaaaa \
@@ -366,10 +366,9 @@ mod tests {
     /// transmits on that adapter, and Windows ships an LLDP agent enabled by default - so without
     /// this the host reads as a device on its own segment.
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn self_exclusion_drops_this_hosts_frames_and_keeps_the_rest() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         let packets = [
             one_of_each(frames::SELF_MAC),
@@ -430,10 +429,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs Npcap; run with --include-ignored"]
     fn self_exclusion_with_no_adapters_matches_the_same_frames() {
-        if !libpcap_available() {
-            return;
-        }
+        require_libpcap();
 
         let packets = one_of_each(frames::SELF_MAC);
 

@@ -113,7 +113,17 @@ public sealed record TopologyVerdict(
     {
         get
         {
-            var basis = Observations.FirstOrDefault(o => o.Finding != TopologyFinding.Inconclusive);
+            // The strongest observation that agrees with the conclusion, not merely the strongest
+            // decisive one. Sorting alone got this wrong in the other direction: `Ordered` ranks by
+            // strength, so a Direct/Strong observation sorts ahead of a Bridged/Suggestive one while
+            // `From` still concludes Bridged - printing "A switch or bridge is in the path" followed
+            // by the detail of a signal arguing for a direct cable. Proven by execution rather than
+            // argued: two reviewers disagreed about whether it was reachable, and a test settled it.
+            //
+            // Today no real producer emits Bridged at Suggestive, so the incoherent line needed the
+            // test helper to construct - but that is a property of the current signal set, not of
+            // this method, and it would be restored silently by one new signal.
+            var basis = Observations.FirstOrDefault(o => Agrees(o, Conclusion));
 
             return Conclusion switch
             {
@@ -197,6 +207,15 @@ public sealed record TopologyVerdict(
             _ => TopologyConfidence.Low,
         };
     }
+
+    /// <summary>Whether an observation argues for the conclusion that was reached.</summary>
+    private static bool Agrees(TopologyObservation observation, TopologyConclusion conclusion) =>
+        conclusion switch
+        {
+            TopologyConclusion.Bridged => observation.Finding == TopologyFinding.Bridged,
+            TopologyConclusion.Direct => observation.Finding == TopologyFinding.Direct,
+            _ => false,
+        };
 
     /// <summary>
     /// Decisive signals first, so a report leads with what settled it.

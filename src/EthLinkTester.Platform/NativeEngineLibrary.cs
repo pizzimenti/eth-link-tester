@@ -25,7 +25,9 @@ internal static class NativeEngineLibrary
     /// <summary>The cdylib's name, as every <c>DllImport</c> in this assembly spells it.</summary>
     public const string Name = "ethlink_engine";
 
-    private static int _registered;
+    private static readonly object RegistrationGate = new();
+
+    private static bool _registered;
 
     /// <summary>
     /// Registers the resolver once, from wherever is first to need the engine.
@@ -37,11 +39,24 @@ internal static class NativeEngineLibrary
     /// </remarks>
     public static void EnsureResolverRegistered()
     {
-        if (Interlocked.Exchange(ref _registered, 1) != 0)
+        // A lock rather than an interlocked flag. The flag published *before* registration
+        // completed, so a second thread could win the exchange, see "already registered", and
+        // P/Invoke while the first was still inside SetDllImportResolver - resolving the engine
+        // through the default search path, or not at all. The window is small and the failure is
+        // a DllNotFoundException from an unrelated call, which is the worst kind to diagnose.
+        lock (RegistrationGate)
         {
-            return;
-        }
+            if (_registered)
+            {
+                return;
+            }
 
+            Register();
+            _registered = true;
+        }
+    }
+
+    private static void Register() =>
         NativeLibrary.SetDllImportResolver(
             typeof(NativeEngineLibrary).Assembly,
             (name, assembly, path) =>
@@ -68,11 +83,24 @@ internal static class NativeEngineLibrary
                 var beside = Path.Combine(
                     Path.GetDirectoryName(assembly.Location) ?? string.Empty, Name + ".dll");
 
-                return File.Exists(beside) && NativeLibrary.TryLoad(beside, out var handle)
+                // Fail closed. Returning IntPtr.Zero hands the name back to the runtime's default
+                // native-library search, which is the one thing this resolver exists to avoid: it
+                // could load some other ethlink_engine.dll from the working directory or PATH, and
+                // an engine that does not match this build reads telemetry through a struct layout
+                // nothing has checked. A named failure beats a silent substitution.
+                if (!File.Exists(beside))
+                {
+                    throw new DllNotFoundException(
+                        $"The engine was not found beside this assembly ({beside}). The managed and "
+                        + "native halves ship together, so this build is incomplete.");
+                }
+
+                return NativeLibrary.TryLoad(beside, out var handle)
                     ? handle
-                    : IntPtr.Zero;
+                    : throw new DllNotFoundException(
+                        $"The engine at {beside} could not be loaded. It is usually a 32/64-bit "
+                        + "mismatch or a missing Visual C++ runtime.");
             });
-    }
 
     /// <summary>
     /// Throws unless Npcap is present, before anything reaches a pcap call.
