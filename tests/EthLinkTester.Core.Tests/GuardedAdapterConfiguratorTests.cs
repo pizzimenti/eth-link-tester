@@ -227,7 +227,7 @@ public class GuardedAdapterConfiguratorTests
         var (rig, configurator) = Build();
         await configurator.ApplyAsync(Adapter(), Keyword, "4");
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Equal("0", rig.Values[Keyword]);
         Assert.True(outcome.JournalCleared);
@@ -251,7 +251,7 @@ public class GuardedAdapterConfiguratorTests
 
         Assert.Equal(2, rig.Entries.Count);
 
-        await configurator.RestoreAllAsync();
+        await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Equal("0", rig.Values[Keyword]);
     }
@@ -272,7 +272,7 @@ public class GuardedAdapterConfiguratorTests
         await configurator.ApplyAsync(adapter, Keyword, "2");   // 100 Full -> 10 Full
         Assert.Equal(2, rig.Entries.Count);
 
-        await configurator.RestoreAllAsync();
+        await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Equal("0", rig.Values[Keyword]);
         Assert.Empty(rig.Entries);
@@ -292,7 +292,7 @@ public class GuardedAdapterConfiguratorTests
         // Recorded after the pass read the journal, as a concurrent run would.
         rig.RecordDuringRestore = true;
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Single(outcome.Restored);
         Assert.False(outcome.JournalCleared);
@@ -310,7 +310,7 @@ public class GuardedAdapterConfiguratorTests
         await configurator.ApplyAsync(Adapter(), Keyword, "4");
         rig.UnusableIdFor.Add(Keyword);
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Empty(outcome.Failures);
         Assert.Single(outcome.Abandoned);
@@ -332,7 +332,7 @@ public class GuardedAdapterConfiguratorTests
         // What an appended entry looks like: well-formed, and naming a value no driver offers.
         rig.Entries[0] = rig.Entries[0] with { OriginalValue = "99" };
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Empty(outcome.Restored);
         Assert.Empty(outcome.Failures);
@@ -361,7 +361,7 @@ public class GuardedAdapterConfiguratorTests
         await configurator.ApplyAsync(Adapter(), Keyword, "4");
         rig.FailWritesFor.Add(Keyword);
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.False(outcome.JournalCleared);
         Assert.False(rig.Cleared);
@@ -385,7 +385,7 @@ public class GuardedAdapterConfiguratorTests
         await configurator.ApplyAsync(Adapter(), "*FlowControl", "0");
         rig.FailWritesFor.Add("*FlowControl");
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Single(outcome.Restored);
         Assert.Single(outcome.Failures);
@@ -426,7 +426,7 @@ public class GuardedAdapterConfiguratorTests
         await configurator.ApplyAsync(Adapter(), Keyword, "4");
         rig.MissingAdapterFor.Add(Keyword);
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Empty(outcome.Failures);
         Assert.Single(outcome.Abandoned);
@@ -446,7 +446,7 @@ public class GuardedAdapterConfiguratorTests
         var (rig, configurator) = Build();
         rig.UnreadableLines = 3;
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.False(outcome.NothingToDo);
         Assert.True(outcome.NeedsAttention);
@@ -465,7 +465,7 @@ public class GuardedAdapterConfiguratorTests
         await configurator.ApplyAsync(Adapter(), Keyword, "4");
         rig.UnreadableLines = 1;
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.Single(outcome.Restored);
         Assert.Equal(1, outcome.UnreadableRecords);
@@ -479,10 +479,121 @@ public class GuardedAdapterConfiguratorTests
     {
         var (rig, configurator) = Build();
 
-        var outcome = await configurator.RestoreAllAsync();
+        var outcome = await configurator.RestoreAsync(RestoreScope.Everything);
 
         Assert.True(outcome.NothingToDo);
         Assert.False(rig.Cleared);
     }
 
+    /// <summary>
+    /// A scoped restore puts back what it names and leaves everything else pending.
+    /// </summary>
+    /// <remarks>
+    /// The composition problem this exists for: a topology probe forces a speed, reads the result
+    /// and has to put it back within seconds - inside a run that has already neutralised offloads
+    /// and is not finished with them. A global restore there reverts the probe's force and the
+    /// run's configuration alike, silently, leaving a suite measuring a rig it no longer set up.
+    /// </remarks>
+    [Fact]
+    public async Task AScopedRestorePutsBackOnlyWhatItNames()
+    {
+        var (rig, configurator) = Build();
+        rig.Values["*FlowControl"] = "3";
+
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+        await configurator.ApplyAsync(Adapter(), "*FlowControl", "0");
+
+        var outcome = await configurator.RestoreAsync(
+            RestoreScope.Property("adapter", Keyword));
+
+        Assert.Single(outcome.Restored);
+        Assert.Equal("0", rig.Values[Keyword]);
+        Assert.Equal("0", rig.Values["*FlowControl"]);
+
+        // And the untouched entry is still on the journal, so it is still recoverable.
+        Assert.False(outcome.JournalCleared);
+        Assert.Single(rig.Entries);
+        Assert.Equal("*FlowControl", rig.Entries[0].PropertyKeyword);
+    }
+
+    /// <summary>The adapter scope, for a probe that changed several properties on one port.</summary>
+    [Fact]
+    public async Task AnAdapterScopedRestoreLeavesTheOtherAdapterAlone()
+    {
+        var (rig, configurator) = Build();
+
+        await configurator.ApplyAsync(Adapter("a"), Keyword, "4");
+        await configurator.ApplyAsync(Adapter("b"), Keyword, "3");
+
+        var outcome = await configurator.RestoreAsync(RestoreScope.Adapter("a"));
+
+        Assert.Single(outcome.Restored);
+        Assert.Equal("a", outcome.Restored[0].AdapterId);
+        Assert.Single(rig.Entries);
+        Assert.Equal("b", rig.Entries[0].AdapterId);
+    }
+
+    /// <summary>
+    /// A scoped restore must not discard an unreadable journal, because discarding is a recovery
+    /// action and this caller is not recovering - it is undoing one thing it did a moment ago.
+    /// </summary>
+    [Fact]
+    public async Task AScopedRestoreDoesNotDiscardAnUnreadableJournal()
+    {
+        var (rig, configurator) = Build();
+        rig.UnreadableLines = 3;
+
+        await configurator.RestoreAsync(RestoreScope.Property("adapter", Keyword));
+
+        Assert.False(rig.Discarded);
+
+        // The full pass still does, which is the path that exists to break the deadlock.
+        await configurator.RestoreAsync(RestoreScope.Everything);
+
+        Assert.True(rig.Discarded);
+    }
+
+    /// <summary>
+    /// A write that changed something says so, and one that found the value already there says
+    /// that instead.
+    /// </summary>
+    /// <remarks>
+    /// This configurator is the only component that knows the difference - it is the thing that
+    /// decides to skip the write - and it used to return a bare <c>Task</c> and discard the fact.
+    /// <see cref="Topology.ForcedSpeedAsymmetrySignal"/> requires exactly this fact to avoid
+    /// interpreting an adapter state a dead run left behind, so with it unavailable there was no
+    /// correct code to write against this interface.
+    /// </remarks>
+    [Fact]
+    public async Task AWriteReportsWhetherItChangedAnything()
+    {
+        var (rig, configurator) = Build();
+
+        var applied = await configurator.ForceSpeedAsync(
+            Adapter(), SpeedDuplex.Full(LinkSpeed.Mbps100));
+
+        Assert.Equal(ConfigurationOutcome.Applied, applied);
+        Assert.Equal("4", rig.Values[Keyword]);
+
+        var second = await configurator.ForceSpeedAsync(
+            Adapter(), SpeedDuplex.Full(LinkSpeed.Mbps100));
+
+        Assert.Equal(ConfigurationOutcome.AlreadyAtTarget, second);
+    }
+
+    /// <summary>
+    /// And the outcome tracks the journal: the skipped write leaves no second entry behind, so
+    /// "nothing was applied" and "nothing was recorded" stay the same statement.
+    /// </summary>
+    [Fact]
+    public async Task AnAlreadyAtTargetWriteJournalsNothingFurther()
+    {
+        var (rig, configurator) = Build();
+
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+        await configurator.ApplyAsync(Adapter(), Keyword, "4");
+
+        Assert.Single(rig.Entries);
+        Assert.Equal("0", rig.Entries[0].OriginalValue);
+    }
 }

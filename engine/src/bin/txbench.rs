@@ -13,13 +13,24 @@
 //! | 512B  | 210 kpps (89.2%)  | 218 kpps (93.0%)  |
 //! | 1518B |  76 kpps (94.0%)  |  77 kpps (94.6%)  |
 //!
+//! **Those are acceptance rates, and only the 512B and 1518B rows have since been confirmed to
+//! reach the far end.** This tool counts what the driver took from it, which is the only thing a
+//! transmitter can count and is not the same as a frame arriving - a driver with no link accepts
+//! frames at memory speed, which is how this rig once reported 11,336 Mbps on a gigabit cable.
+//! `tools/Measure-Link.ps1` brackets a run with both NICs' hardware counters and settles it, and
+//! at 64 bytes Realtek -> Killer it confirms **210k frames/s delivered** against the 436k accepted
+//! above. Half. The 64-byte rows here are a ceiling on what can be offered, not a measurement of
+//! what crosses.
+//!
 //! Three conclusions worth keeping. Large frames reach ~94% of line rate in both directions, so
 //! the cable and the batching are not the limit. Small frames do not, and the limit is the
-//! **Killer E2400's transmit path** rather than Npcap or this code - the USB dongle, which ought
-//! to be the weaker adapter, is four times faster at 64 bytes. And the asymmetry means a 64-byte
-//! result from this rig characterises the transmitting NIC, not the cable: the same cable measured
-//! the other way looks four times better. Any report quoting a small-frame figure has to say which
-//! direction produced it.
+//! transmitting adapter rather than Npcap or this code - the USB dongle, which ought to be the
+//! weaker adapter, accepts four times as many 64-byte frames as the Killer and delivers roughly
+//! twice as many. And the asymmetry means a 64-byte result from this rig characterises the
+//! transmitting NIC, not the cable: the same cable measured the other way looks far better. Any
+//! report quoting a small-frame figure has to say which direction produced it - and the Killer ->
+//! Realtek direction does not reproduce at all, varying between 49k and 255k frames/s across ten
+//! identical runs, which is why the README publishes no number for it.
 //!
 //! Flow control was tested as a suspect and cleared: disabling it on both adapters changed 64-byte
 //! throughput not at all and made mid-sizes worse.

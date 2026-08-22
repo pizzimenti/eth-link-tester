@@ -95,6 +95,31 @@ internal static class Cim
     public static List<CimInstance> Query(string query) =>
         [.. Session.Value.QueryInstances(Namespace, Wql, query)];
 
+    /// <summary>
+    /// Runs a query with the provider's <c>AllBindings</c> custom option set.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>MSFT_NetAdapterBindingSettingData</c> answers a plain query with the same set the Network
+    /// Connections dialog shows - ten of eighteen on the reference adapter, the missing eight being
+    /// Microsoft internals like <c>ms_ndiscap</c> and <c>ms_wfplwf_lower</c>. This is the option
+    /// <c>Get-NetAdapterBinding -AllBindings</c> sets, and it is what makes the answer complete.
+    /// </para>
+    /// <para>
+    /// Verified against the live provider rather than assumed, in both directions: the plain query
+    /// returns ten rows and this returns eighteen. The three bindings that block a run are all in
+    /// the visible ten, so this is insurance rather than a fix - which is the reason to have it,
+    /// since a vendor component that hides itself is exactly the one worth finding.
+    /// </para>
+    /// </remarks>
+    public static List<CimInstance> QueryAllBindings(string query)
+    {
+        using var options = new CimOperationOptions();
+        options.SetCustomOption("AllBindings", true, mustComply: false);
+
+        return [.. Session.Value.QueryInstances(Namespace, Wql, query, options)];
+    }
+
     /// <summary>Applies a modified instance back to the provider.</summary>
     public static void Modify(CimInstance instance) =>
         Session.Value.ModifyInstance(Namespace, instance);

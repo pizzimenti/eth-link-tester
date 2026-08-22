@@ -14,7 +14,8 @@ use std::ffi::CString;
 
 use ethlink_engine::diag::{device, mac, require_npcap};
 use ethlink_engine::ffi::{
-    elt_engine_drain, elt_engine_fault, elt_engine_start, elt_engine_stop, EngineHandle,
+    elt_engine_drain, elt_engine_fault, elt_engine_start, elt_engine_stop, elt_passive_listen,
+    elt_sweep_addresses, elt_topology_sweep, EngineHandle, ELT_ERR_BUFFER_SIZE,
     ELT_ERR_NOT_RUNNING, ELT_ERR_NULL_ARGUMENT, ELT_OK,
 };
 use ethlink_engine::TelemetrySample;
@@ -158,6 +159,73 @@ fn main() {
         "fault after stop",
         unsafe { elt_engine_fault(handle) },
         ELT_ERR_NOT_RUNNING,
+    );
+
+    // The topology entry points, whose arguments are buffers rather than handles - so the misuse
+    // that matters is a length the ABI cannot honour. A short buffer silently truncated would drop
+    // the discriminating address's count, which reads exactly like "nothing filtered it".
+    println!("\ntopology entry points");
+
+    let mut arrived = vec![0u32; elt_sweep_addresses() as usize];
+    passed &= check(
+        "sweep with a null device",
+        unsafe {
+            elt_topology_sweep(
+                std::ptr::null(),
+                rx_name.as_ptr(),
+                tx_mac.as_ptr(),
+                1,
+                arrived.as_mut_ptr(),
+                arrived.len() as u32,
+            )
+        },
+        ELT_ERR_NULL_ARGUMENT,
+    );
+    passed &= check(
+        "sweep with a buffer one short",
+        unsafe {
+            elt_topology_sweep(
+                tx_name.as_ptr(),
+                rx_name.as_ptr(),
+                tx_mac.as_ptr(),
+                1,
+                arrived.as_mut_ptr(),
+                arrived.len() as u32 - 1,
+            )
+        },
+        ELT_ERR_BUFFER_SIZE,
+    );
+
+    let mut counts = [0u32; 3];
+    passed &= check(
+        "listen with a null mac",
+        unsafe {
+            elt_passive_listen(
+                tx_name.as_ptr(),
+                rx_name.as_ptr(),
+                std::ptr::null(),
+                rx_mac.as_ptr(),
+                0,
+                counts.as_mut_ptr(),
+                counts.len() as u32,
+            )
+        },
+        ELT_ERR_NULL_ARGUMENT,
+    );
+    passed &= check(
+        "listen with an oversized buffer",
+        unsafe {
+            elt_passive_listen(
+                tx_name.as_ptr(),
+                rx_name.as_ptr(),
+                tx_mac.as_ptr(),
+                rx_mac.as_ptr(),
+                0,
+                counts.as_mut_ptr(),
+                counts.len() as u32 + 1,
+            )
+        },
+        ELT_ERR_BUFFER_SIZE,
     );
 
     println!(

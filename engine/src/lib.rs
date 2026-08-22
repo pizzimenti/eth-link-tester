@@ -27,7 +27,10 @@ pub mod engine;
 pub mod ffi;
 pub mod frame;
 pub mod histogram;
+pub mod passive;
 pub mod ring;
+pub mod sweep;
+pub mod topology;
 
 pub use engine::{Engine, EngineFault, RunConfig, StartError};
 
@@ -43,6 +46,19 @@ pub use engine::{Engine, EngineFault, RunConfig, StartError};
 /// (which already contains the FCS) and so adds 20; this counts from the 1514-byte buffer and adds
 /// 24. Both arrive at 1538, and a review found them 29% apart at 64 bytes before they did.
 pub const WIRE_OVERHEAD_BYTES: usize = 24;
+
+/// The 1538 both sides have to reach, asserted here and again in `EthernetFrameTests`.
+///
+/// The two constants differ by four on purpose, because they count from different starting points,
+/// and that is exactly the shape of agreement that decays into a wrong number: the prose above
+/// explained the relationship and nothing checked it. This is the arithmetic, on the Rust side of
+/// the seam; the managed side asserts `WireBytes(1518) == 1538` against the same total. Compile-time
+/// rather than a test, since both operands are constants and a change should fail the build.
+const _: () = assert!(
+    1514 + WIRE_OVERHEAD_BYTES == 1538,
+    "a maximum-size frame occupies 1538 bytes of wire time; the managed side counts to the same \
+     total from the 1518-byte wire frame"
+);
 
 /// Telemetry as the managed host reads it.
 ///
@@ -61,7 +77,13 @@ pub struct TelemetrySample {
     pub latency_p99_microseconds: f64,
     pub tx_frames: i64,
     pub rx_frames: i64,
-    pub rx_errors: i64,
+    /// Frames the kernel matched and the capture buffer then lost. Not errors, and not cable loss.
+    ///
+    /// This field was `rx_errors` at the ABI - the one boundary a new engine-side reader inspects
+    /// first - long after both the managed property and the engine's own counter had been renamed
+    /// away from that word for being actively misleading. A name is not layout, so nothing broke;
+    /// it simply told everyone arriving at the seam the wrong thing about what the number means.
+    pub rx_capture_drops: i64,
 }
 
 /// The EtherType every frame this engine generates carries.
@@ -100,6 +122,6 @@ mod tests {
         assert_eq!(offset_of!(TelemetrySample, latency_p99_microseconds), 32);
         assert_eq!(offset_of!(TelemetrySample, tx_frames), 40);
         assert_eq!(offset_of!(TelemetrySample, rx_frames), 48);
-        assert_eq!(offset_of!(TelemetrySample, rx_errors), 56);
+        assert_eq!(offset_of!(TelemetrySample, rx_capture_drops), 56);
     }
 }

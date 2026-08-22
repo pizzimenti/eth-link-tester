@@ -80,7 +80,7 @@ fn main() {
                 last.latency_p99_microseconds,
                 last.tx_frames,
                 last.rx_frames,
-                last.rx_errors
+                last.rx_capture_drops
             );
         }
     }
@@ -131,7 +131,7 @@ fn main() {
     );
     println!(
         "capture drops   : {}  (our buffer, not the cable)",
-        last.rx_errors
+        last.rx_capture_drops
     );
 
     // Nonzero on a fault, because a caller cannot tell otherwise. tools\Measure-Link.ps1 treats

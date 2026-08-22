@@ -28,9 +28,13 @@ and link retrains under sustained load.
 
 - **Link characterization** — time-to-link, downshift detection, master/slave resolution, MDI/MDI-X,
   pause capability, EEE state, forced 10/100 half and full duplex sweeps
-- **Topology detection** — whether a switch is sitting in the middle, using a reserved-multicast
-  probe that conforming 802.1D bridges are required *not* to forward, backed by passive LLDP/CDP/STP
-  observation and latency-vs-frame-size slope analysis
+- **Topology detection** — whether a switch is sitting in the middle. The strongest signal is a
+  deliberate asymmetry: force one port to 100 Mbps and see whether the other follows, since one
+  cable is one link and a switch terminates each segment separately. Corroborated by a
+  reserved-multicast sweep of the addresses IEEE 802.1Q says every relay component must filter, and
+  by passively listening for the LLDP, CDP and STP a managed device announces itself with. The
+  model is deliberately asymmetric — it reaches "bridged" readily and "direct" reluctantly, because
+  the second wrong answer silently contaminates every grade that follows it
 - **RFC 2544 frame sweep** — zero-loss throughput by binary search, latency distribution
   (p50/p99/p99.9, not mean), frame loss rate, back-to-back burst tolerance
 - **Soak testing** — sustained load watching error-counter deltas, link flaps, and PHY retrains.
@@ -46,10 +50,11 @@ your hardware can actually reach.
 
 The central claim — that Npcap injection reaches copper — is not taken on trust, and it is not
 taken on memory either. Every figure below is produced by a committed tool you can run yourself.
-`engine/src/bin/` holds four: `wirecheck` counts frames across the link, `txbench` finds the
-transmit ceiling, `enginerun` drives the whole engine, and `abicheck` calls the C ABI the way a
-buggy host would. `tools/` holds two more that bracket those runs with the NICs' **own hardware
-counters** — `Verify-Wire.ps1` and `Measure-Link.ps1`.
+`engine/src/bin/` holds six: `wirecheck` counts frames across the link, `txbench` finds the
+transmit ceiling, `enginerun` drives the whole engine, `abicheck` calls the C ABI the way a buggy
+host would, `topocheck` runs the reserved-multicast sweep, and `passivecheck` listens for the
+protocols a switch announces itself with. `tools/` holds two more that bracket those runs with the
+NICs' **own hardware counters** — `Verify-Wire.ps1` and `Measure-Link.ps1`.
 
 That split matters, because userspace cannot answer the question the project rests on. A frame
 handed back by a software bridge carries the same destination MAC as one that crossed a cable, so
@@ -128,6 +133,45 @@ owns this.
 separately from the bulk traffic and leaves a bubble in the driver's pipeline. That figure was
 measured at 1518 bytes only and does not transfer to other frame sizes. RFC 2544 measures
 throughput and latency in separate tests for exactly this reason, which is what Phase 5 will do.
+
+### Topology, measured on the same rig
+
+Phase 4 asks whether the two adapters are wired to each other or have something in between, and it
+is deliberately hard to satisfy: it reaches "bridged" from any credible sign and "direct" only from
+a signal that can positively demonstrate one. Calling a direct cable bridged wastes an afternoon;
+calling a bridged path direct makes every grade that follows it a lie about a cable that was never
+alone in the path.
+
+| | Result on a known-direct cable |
+|---|---|
+| Reserved-multicast sweep | **20 of 20** on all four addresses, both directions — `topocheck` |
+| Passive listen, 190 s | **Nothing heard** on either NIC, which settles nothing and says so — `passivecheck` |
+| Forced-speed asymmetry | Killer pinned to 100 Mbps, Realtek followed it down from 1 Gbps in **under 2 s**, restored afterwards |
+| Combined verdict | **Direct, moderate confidence, grading attributable** |
+| With the forced-speed test declined | **Unknown** — and that is the correct answer, not a failure |
+
+That last row is the point. Both ports at a gigabit with every reserved address crossing is exactly
+what a direct cable looks like *and* exactly what a media converter or PHY repeater looks like. Only
+the forced-speed test can tell them apart, so declining it leaves the question open and nothing may
+be graded against it.
+
+**Two things the hardware corrected.** The standards reading says a forced PHY stops sending fast
+link pulses, so its partner falls back on parallel detection — which carries speed but not duplex
+and therefore comes up **half**, making a far end at 100 *full* proof of something negotiating in
+the path. On this rig it comes up **full**, on a bare cable, because a driver asked for a fixed
+speed may restrict its advertised capability and keep negotiating rather than disabling negotiation
+at all. A duplex-based verdict would have called the reference rig bridged. And writing
+`*SpeedDuplex` bounces the link at *both* ends, so a detector that waits only for the forced adapter
+reads the other one while it is still down and reports a dark link on a cable that was never dark.
+
+Neither was visible in source review. Both were found by running it.
+
+**The bridged half has not been calibrated against copper.** Every "something is in the path" result
+is verified by unit tests over synthetic inputs and by nothing else; the reference NETGEAR GS308 has
+yet to be put in line. Its silicon is a Broadcom BCM53128, which in unmanaged mode drops
+`01:80:C2:00:00:02`–`0F` and floods unknown multicast, so the expected result is a control frame
+through and all three reserved probes absorbed. Until that has actually been run, treat a bridged
+verdict as untested.
 
 ## What it is not
 

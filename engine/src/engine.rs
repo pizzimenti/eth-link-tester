@@ -17,16 +17,25 @@
 //! accepted the batch, not when the wire has carried it, so the next probe can still be sitting
 //! behind the previous batch inside the NIC.
 //!
-//! Measured on the reference rig:
+//! Measured on the reference rig, on an idle host, Killer -> Realtek:
 //!
 //! | Frame | Throughput | p50 | p99 |
 //! |---|---|---|---|
-//! | 1518 B | 900 Mbps | 520 µs | 780 µs |
-//! | 64 B | 188 Mbps | 3,700 µs | 5,900 µs |
+//! | 1518 B | ~890 Mbps | ~490 µs | ~800 µs |
+//! | 64 B | not reproducible | | |
 //!
-//! The 64-byte figure is a property of the transmitting NIC rather than of the cable - the same
-//! conclusion `bin/txbench.rs` reached about small-frame throughput on this hardware - because the
-//! driver's byte-limited buffer holds far more small frames than large ones.
+//! **The 64-byte forward direction does not reproduce and no figure is published for it.** Across
+//! ten identical runs it varied between 49k and 255k frames/s and between 52% and 99.7% delivered,
+//! every missing frame matching the Realtek's own `ReceivedDiscardedPackets` count. This table
+//! carried `188 Mbps / 3,700 µs / 5,900 µs` for that row long after the README had withdrawn it,
+//! which is two documents in one repository disagreeing about the same measurement with the stale
+//! one facing the maintainer. The reverse direction does reproduce: 210k frames/s delivered,
+//! confirmed against both NICs' hardware counters.
+//!
+//! What the small-frame figures describe is the transmitting NIC rather than the cable - the same
+//! conclusion `bin/txbench.rs` reached - because the driver's byte-limited buffer holds far more
+//! small frames than large ones. Host load moves p99 by a factor of five and p50 barely at all, so
+//! a tail from this rig is a statement about scheduling until proven otherwise.
 //!
 //! **The probe costs about 3.5% of throughput at 1518 bytes** (900 Mbps against 934 with the probe
 //! inside the batch), because interleaving a single-frame send with a batched one leaves a bubble
@@ -88,11 +97,18 @@ const RATE_WINDOW_SAMPLES: usize = 30;
 /// leaves first (see [`frame::stamp`]) separates the two concerns, and lets this be sized for
 /// throughput alone.
 ///
-/// 4 ms also sets the latency sampling rate, because exactly one frame per batch is timed: 250
-/// batches a second is 125 timed arrivals per half-second window, which is enough to support a p99.
-/// One per 8 ms batch was not - windows held one sample or none, and the published p50 and p99 were
+/// 4 ms also sets the latency sampling rate, because exactly one frame per batch is timed. One per
+/// 8 ms batch was not enough - windows held one sample or none, and the published p50 and p99 were
 /// identical, which the histogram's own documentation calls the signature of a measurement that has
 /// stopped measuring.
+///
+/// The arithmetic that used to appear here - "250 batches a second is 125 timed arrivals per
+/// half-second window" - assumed the batch drains in its own wire time, and a batch only does that
+/// when the link is carrying it at line rate. At 64 bytes on this rig it does not: the measured
+/// 280k frames/s against 5,900 frames a batch is nearer 47 batches a second, so a half-second
+/// window holds two dozen samples rather than 125. Still enough for a p99 to mean something, and
+/// not what was claimed. The README has carried that correction since Phase 3 and this constant
+/// did not.
 const SEND_QUEUE_WIRE_TIME: Duration = Duration::from_millis(4);
 
 /// Assumed link rate when the caller does not know one. Gigabit is the floor this rig runs at.
@@ -204,7 +220,30 @@ const NO_LATENCY: (f64, f64) = (0.0, 0.0);
 struct Counters {
     tx_frames: AtomicU64,
     tx_bytes: AtomicU64,
-    /// Frames the kernel filter matched. Authoritative even when userspace cannot keep up.
+    /// This run's frames that reached the receiving adapter: handed to the capture loop, plus the
+    /// ones the kernel matched and the buffer then lost.
+    ///
+    /// **Not `ps_recv`, which is what this used to be, and which does not mean what the name
+    /// suggests on this platform.** libpcap's `pcap_stats` documents `ps_recv` as platform-defined;
+    /// the Npcap maintainers' definitive answer is that it counts "all packets on the interface
+    /// that the Npcap driver has seen while this handle was open" - before the filter, everything on
+    /// the wire. The filter-matched-and-delivered counter is `ps_capt`, which lives only in
+    /// `pcap_stats_ex` and is not bound by the pcap crate at any version through 2.5.0.
+    ///
+    /// So the run-id filter protected the latency path, where `parse` gates every sample, and not
+    /// the delivery count - the number this tool exists to publish. Every frame arriving at the RX
+    /// adapter was credited as one of this run's, at this run's frame size: Windows chatter from
+    /// both stacks, an STP hello every two seconds in exactly the switched topologies Phase 4 goes
+    /// looking for, and worst of all a second overlapping run's traffic, which is the scenario the
+    /// run id exists to prevent and which this counter reintroduced underneath it. The error was
+    /// always flattering - delivery overstated, loss understated, receive throughput inflated.
+    ///
+    /// Both halves of the replacement are well-defined on Npcap. Frames delivered to the loop are
+    /// counted where they arrive, after the kernel filter. `ps_drop` really is filter-scoped, so
+    /// adding it keeps the property the old comment claimed: a frame the kernel matched still
+    /// counts as delivered to the adapter even when userspace could not keep up with it, because
+    /// reaching the NIC is what "received" means here and losing it afterwards is our shortfall,
+    /// not the cable's.
     rx_frames: AtomicU64,
     /// Frames the kernel matched but the capture buffer lost. Not cable loss - our own shortfall.
     rx_capture_drops: AtomicU64,
@@ -379,7 +418,7 @@ impl Drop for Engine {
 /// otherwise each count the other's frames as their own deliveries, and a cable dropping everything
 /// in one direction would still report a full receive count. Sixteen bits is enough: the id only
 /// has to distinguish runs that overlap in time on one wire.
-fn next_run_id() -> u16 {
+pub fn next_run_id() -> u16 {
     static NEXT: AtomicU16 = AtomicU16::new(0);
     static SEED: OnceLock<u16> = OnceLock::new();
 
@@ -404,14 +443,28 @@ fn next_run_id() -> u16 {
 }
 
 /// Bytes to allocate for the transmit batch: [`SEND_QUEUE_WIRE_TIME`] at the link's rate.
-fn send_queue_bytes(link_bits_per_second: u64) -> u32 {
+///
+/// **The queue's own accounting, not the wire's.** `SendQueue::new` takes a buffer that has to hold
+/// both the packet contents and a `pcap_pkthdr` per packet - sixteen bytes each, which the crate
+/// exposes as `packet_header_size()` precisely so a caller can size exactly. The old sizing spent
+/// the whole buffer as though it were frame bytes, and since the header is smaller than the 24
+/// bytes of wire overhead a frame occupies, the buffer held *more* wire time than it asked for: 4.0
+/// ms at 1514-byte frames and 4.4 ms at 60, where the two per-frame constants are furthest apart.
+/// Ten percent, in the direction that makes a stop slower to notice.
+///
+/// It went unnoticed because the test that should have caught it asserted the analytic formula
+/// against itself rather than against what the queue holds, so it certified a wire time the queue
+/// did not have.
+fn send_queue_bytes(link_bits_per_second: u64, frame_len: usize) -> u32 {
     let bits = if link_bits_per_second == 0 {
         DEFAULT_LINK_BITS_PER_SECOND
     } else {
         link_bits_per_second
     };
 
-    let bytes = (bits / 8) as f64 * SEND_QUEUE_WIRE_TIME.as_secs_f64();
+    let wire_bytes = (bits / 8) as f64 * SEND_QUEUE_WIRE_TIME.as_secs_f64();
+    let frames = wire_bytes / (frame_len + WIRE_OVERHEAD_BYTES) as f64;
+    let bytes = frames * (frame_len + pcap::packet_header_size()) as f64;
 
     // Floor: below about 64 KB the per-batch call starts to dominate at small frame sizes.
     // Ceiling: 8 MB is more than 10 Gbps needs and keeps a bad link-speed figure from asking for a
@@ -443,11 +496,19 @@ fn spawn_rx(
         guard(&counters, || {
             let mut local = LatencyHistogram::new();
             let mut since_publish = Instant::now();
-            let (mut last_received, mut last_dropped) = (0u32, 0u32);
+            let mut last_dropped = 0u32;
+            // Counted here rather than read back from pcap, and folded into the shared total on the
+            // publish tick. Every packet reaching this arm has already passed the kernel's run-id
+            // filter, so this is the kernel's own judgement of what belongs to this run - which is
+            // what `ps_recv` was wrongly assumed to report. Local because a relaxed atomic add at a
+            // million frames a second is a cost the measurement does not need to carry.
+            let mut delivered = 0u64;
 
             while running.load(Ordering::Acquire) {
                 match capture.next_packet() {
                     Ok(packet) => {
+                        delivered += 1;
+
                         // Untimed frames still arrive and are still counted by the kernel filter;
                         // they simply carry no send time to subtract. Treating their zero as a
                         // timestamp would report a flood of zero-microsecond arrivals and drag
@@ -478,25 +539,8 @@ fn spawn_rx(
                 // Statistics and the histogram are published on a timer rather than per frame:
                 // taking a lock at a million frames a second would cost more than the measurement.
                 if since_publish.elapsed() >= SAMPLE_INTERVAL {
-                    if let Ok(stats) = capture.stats() {
-                        // Accumulated as wrapping 32-bit deltas, not widened as though each
-                        // snapshot were a 64-bit lifetime total. pcap's counters are 32 bits and
-                        // wrap: at 10 Gb/s with 64-byte frames that is roughly every five minutes,
-                        // and storing the raw snapshot would drop the receive count by 4.3 billion
-                        // at each wrap - throughput reading zero for a window and delivery ratios
-                        // corrupted for the rest of the run. A soak is exactly when this bites.
-                        counters.rx_frames.fetch_add(
-                            u64::from(stats.received.wrapping_sub(last_received)),
-                            Ordering::Relaxed,
-                        );
-                        counters.rx_capture_drops.fetch_add(
-                            u64::from(stats.dropped.wrapping_sub(last_dropped)),
-                            Ordering::Relaxed,
-                        );
+                    fold_receive(&mut capture, &counters, &mut delivered, &mut last_dropped);
 
-                        last_received = stats.received;
-                        last_dropped = stats.dropped;
-                    }
                     // Merged rather than replaced, because the sampler clears the shared histogram
                     // when it takes a window and a wholesale copy would resurrect what it cleared.
                     if let Ok(mut shared) = latency.lock() {
@@ -506,8 +550,45 @@ fn spawn_rx(
                     since_publish = Instant::now();
                 }
             }
+
+            // Once more on the way out. The loop exits on a stop or a capture error, either of
+            // which can land mid-window, and the frames counted since the last tick are as real as
+            // any others - dropping them would charge a partial window to loss, which is the same
+            // shape of error `stop_transmit` exists to prevent at the other end of the run.
+            fold_receive(&mut capture, &counters, &mut delivered, &mut last_dropped);
         })
     }))
+}
+
+/// Folds one window's receive counts into the shared totals.
+///
+/// The drop delta is accumulated as a wrapping 32-bit difference rather than widened as though each
+/// snapshot were a 64-bit lifetime total. pcap's counters are 32 bits and wrap: at 10 Gb/s with
+/// 64-byte frames that is roughly every five minutes, and storing the raw snapshot would drop the
+/// count by 4.3 billion at each wrap - throughput reading zero for a window and delivery ratios
+/// corrupted for the rest of the run. A soak is exactly when this bites.
+fn fold_receive(
+    capture: &mut pcap::Capture<pcap::Active>,
+    counters: &Counters,
+    delivered: &mut u64,
+    last_dropped: &mut u32,
+) {
+    let mut received = std::mem::take(delivered);
+
+    if let Ok(stats) = capture.stats() {
+        let dropped = stats.dropped.wrapping_sub(*last_dropped);
+        *last_dropped = stats.dropped;
+
+        counters
+            .rx_capture_drops
+            .fetch_add(u64::from(dropped), Ordering::Relaxed);
+
+        // A frame the kernel matched and the buffer then lost still reached the adapter, so it is
+        // a delivery. Counting it as loss would blame the cable for our own backlog.
+        received += u64::from(dropped);
+    }
+
+    counters.rx_frames.fetch_add(received, Ordering::Relaxed);
 }
 
 fn spawn_tx(
@@ -523,7 +604,7 @@ fn spawn_tx(
             let mut buffer = frame::build(config.rx_mac, config.tx_mac, config.frame_len, run_id);
             let wire_bytes = (buffer.len() + WIRE_OVERHEAD_BYTES) as u64;
 
-            let queue_bytes = send_queue_bytes(config.link_bits_per_second);
+            let queue_bytes = send_queue_bytes(config.link_bits_per_second, buffer.len());
             let mut queue = match SendQueue::new(queue_bytes) {
                 Ok(queue) => queue,
                 Err(_) => {
@@ -680,7 +761,7 @@ fn spawn_sampler(
                     latency_p99_microseconds: p99,
                     tx_frames: counters.tx_frames.load(Ordering::Relaxed) as i64,
                     rx_frames: rx_frames as i64,
-                    rx_errors: counters.rx_capture_drops.load(Ordering::Relaxed) as i64,
+                    rx_capture_drops: counters.rx_capture_drops.load(Ordering::Relaxed) as i64,
                 });
             }
         })
@@ -752,21 +833,34 @@ mod tests {
         ));
     }
 
-    /// The batch is sized in wire time so it scales with the link, and bounds how long a stop may
-    /// take to be noticed - a transmit already in flight cannot be interrupted.
-    fn drain_seconds(bits: u64) -> f64 {
-        send_queue_bytes(bits) as f64 * 8.0 / bits as f64
+    /// How long the batch this sizing produces actually takes to leave the wire.
+    ///
+    /// Through the queue's own accounting rather than the analytic formula the sizing uses: a
+    /// buffer of N bytes holds N / (frame + header) frames, and each of those occupies
+    /// frame + WIRE_OVERHEAD_BYTES of wire time. Asserting the formula against itself is what the
+    /// previous version of this test did, which is why it certified a wire time the queue did not
+    /// hold.
+    fn drain_seconds(bits: u64, frame_len: usize) -> f64 {
+        let capacity = send_queue_bytes(bits, frame_len) as f64;
+        let frames = capacity / (frame_len + pcap::packet_header_size()) as f64;
+
+        frames * (frame_len + WIRE_OVERHEAD_BYTES) as f64 * 8.0 / bits as f64
     }
 
     #[test]
     fn the_transmit_batch_holds_the_intended_wire_time() {
-        for bits in [1_000_000_000u64, 2_500_000_000, 5_000_000_000] {
-            let seconds = drain_seconds(bits);
+        // Both ends of the frame range, because the per-packet header is a fifth of a minimum
+        // frame and a rounding error on a maximum one - so a sizing that ignores it is wrong by
+        // ten percent at one end and invisible at the other.
+        for frame_len in [frame::MIN_BUFFER, frame::MAX_BUFFER] {
+            for bits in [1_000_000_000u64, 2_500_000_000, 5_000_000_000] {
+                let seconds = drain_seconds(bits, frame_len);
 
-            assert!(
-                (seconds - SEND_QUEUE_WIRE_TIME.as_secs_f64()).abs() < 0.000_5,
-                "{bits} bps drains its batch in {seconds}s"
-            );
+                assert!(
+                    (seconds - SEND_QUEUE_WIRE_TIME.as_secs_f64()).abs() < 0.000_5,
+                    "{bits} bps at {frame_len} bytes drains its batch in {seconds}s"
+                );
+            }
         }
     }
 
@@ -776,10 +870,10 @@ mod tests {
     /// frames, which is the direction that helps.
     #[test]
     fn the_clamps_keep_the_batch_within_safe_bounds() {
-        let slow = drain_seconds(10_000_000);
+        let slow = drain_seconds(10_000_000, frame::MAX_BUFFER);
         assert!(slow < 0.1, "10 Mbps: a stop would wait {slow}s");
 
-        let fast = drain_seconds(100_000_000_000);
+        let fast = drain_seconds(100_000_000_000, frame::MAX_BUFFER);
         assert!(fast < SEND_QUEUE_WIRE_TIME.as_secs_f64());
         assert!(fast > 0.000_5, "100 Gbps: {fast}s is too short to batch");
     }
@@ -787,8 +881,8 @@ mod tests {
     #[test]
     fn an_unknown_link_rate_falls_back_to_gigabit() {
         assert_eq!(
-            send_queue_bytes(0),
-            send_queue_bytes(DEFAULT_LINK_BITS_PER_SECOND)
+            send_queue_bytes(0, frame::MAX_BUFFER),
+            send_queue_bytes(DEFAULT_LINK_BITS_PER_SECOND, frame::MAX_BUFFER)
         );
     }
 

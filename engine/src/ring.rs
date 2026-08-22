@@ -113,7 +113,7 @@ fn to_words(sample: &TelemetrySample) -> [u64; WORDS] {
         sample.latency_p99_microseconds.to_bits(),
         sample.tx_frames as u64,
         sample.rx_frames as u64,
-        sample.rx_errors as u64,
+        sample.rx_capture_drops as u64,
     ]
 }
 
@@ -126,7 +126,7 @@ fn from_words(words: [u64; WORDS]) -> TelemetrySample {
         latency_p99_microseconds: f64::from_bits(words[4]),
         tx_frames: words[5] as i64,
         rx_frames: words[6] as i64,
-        rx_errors: words[7] as i64,
+        rx_capture_drops: words[7] as i64,
     }
 }
 
@@ -242,7 +242,7 @@ mod tests {
             latency_p99_microseconds: 1e300,
             tx_frames: i64::MAX,
             rx_frames: i64::MIN,
-            rx_errors: 7,
+            rx_capture_drops: 7,
         };
 
         assert_eq!(from_words(to_words(&original)), original);
@@ -377,7 +377,7 @@ mod tests {
                         latency_p99_microseconds: n as f64,
                         tx_frames: n,
                         rx_frames: n,
-                        rx_errors: n,
+                        rx_capture_drops: n,
                     });
                     n += 1;
                 }
@@ -395,7 +395,7 @@ mod tests {
                 let n = sample.timestamp_ticks;
                 assert_eq!(sample.tx_frames, n, "torn sample: fields disagree");
                 assert_eq!(sample.rx_frames, n, "torn sample: fields disagree");
-                assert_eq!(sample.rx_errors, n, "torn sample: fields disagree");
+                assert_eq!(sample.rx_capture_drops, n, "torn sample: fields disagree");
                 assert_eq!(sample.tx_megabits_per_second, n as f64, "torn sample");
                 assert_eq!(sample.latency_p99_microseconds, n as f64, "torn sample");
                 checked += 1;

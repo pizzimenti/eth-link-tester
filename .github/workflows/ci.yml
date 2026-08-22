@@ -41,8 +41,14 @@ jobs:
 
       # Npcap's runtime is a user-installed prerequisite its licence forbids redistributing, but
       # the SDK is a plain zip and is all that linking needs. CI therefore builds the engine
-      # without installing a capture driver: unit tests here are pure logic - ring, histogram,
-      # frame parsing, layout - and anything needing a NIC runs on the bench rig instead.
+      # without installing a capture driver.
+      #
+      # What that costs, stated rather than assumed: the seven tests in passive.rs that compile and
+      # execute real BPF filters cannot run here, and are #[ignore]d so they show as `7 ignored` in
+      # this job's summary rather than counting as passes. They used to skip at run time with an
+      # eprintln, which libtest swallows for passing tests - so CI reported them green while
+      # asserting nothing, in a module whose entire subject is filters that fail silently. Those
+      # seven run on the bench rig with `cargo test -- --include-ignored`.
       - name: Fetch the Npcap SDK
         shell: pwsh
         # The archive is checked before it is opened. The URL is not content-addressed, so this is

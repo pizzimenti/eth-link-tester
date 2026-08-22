@@ -22,4 +22,13 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!--
+    The sweep definition both languages are tested against. Copied rather than referenced by path
+    so the test reads it the same way whatever directory the runner starts in; see SweepSeamTests
+    for why the two definitions need a shared file at all.
+  -->
+  <ItemGroup>
+    <None Include="..\..\engine\topology-sweep.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

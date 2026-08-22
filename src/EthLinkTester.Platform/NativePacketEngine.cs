@@ -31,7 +31,7 @@ namespace EthLinkTester.Platform;
 [SupportedOSPlatform("windows")]
 public sealed class NativePacketEngine : IPacketEngine
 {
-    private const string Library = "ethlink_engine";
+    private const string Library = NativeEngineLibrary.Name;
 
     private readonly string _txDevice;
     private readonly string _rxDevice;
@@ -42,40 +42,7 @@ public sealed class NativePacketEngine : IPacketEngine
     private long _droppedSamples;
     private bool _disposed;
 
-    static NativePacketEngine() =>
-        // Resolves the engine relative to this assembly rather than trusting the search path.
-        // "The application directory" is a different place under dotnet run, the packaged app and
-        // a test host, and the engine ships beside this assembly in all three.
-        NativeLibrary.SetDllImportResolver(
-            typeof(NativePacketEngine).Assembly,
-            (name, assembly, path) =>
-            {
-                if (!string.Equals(name, Library, StringComparison.Ordinal))
-                {
-                    return IntPtr.Zero;
-                }
-
-                // Npcap first: the engine imports wpcap.dll, and resolving that is what the
-                // loader would otherwise fail at. Done here rather than in a static constructor so
-                // the work happens when the engine is actually needed, and so merely referencing
-                // this type from a test host does not touch the filesystem.
-                //
-                // The result is deliberately not fatal here. wpcap is delay-loaded, so the engine
-                // resolves and answers elt_sample_size perfectly well without Npcap present, and
-                // refusing the whole library would turn a missing prerequisite into an unloadable
-                // assembly. What must not happen is a *pcap* call reaching Rust with no Npcap
-                // behind it - the MSVC delay-load failure path raises a loader exception from
-                // inside the engine, outside catch_unwind's contract, which can take the process
-                // rather than returning ELT_ERR_OPEN_FAILED. StartAsync gates that directly.
-                NpcapLoader.TryLoad();
-
-                var beside = Path.Combine(
-                    Path.GetDirectoryName(assembly.Location) ?? string.Empty, Library + ".dll");
-
-                return File.Exists(beside) && NativeLibrary.TryLoad(beside, out var handle)
-                    ? handle
-                    : IntPtr.Zero;
-            });
+    static NativePacketEngine() => NativeEngineLibrary.EnsureResolverRegistered();
 
     /// <param name="txDevice">Npcap device name, e.g. <c>\Device\NPF_{GUID}</c>.</param>
     public NativePacketEngine(string txDevice, string rxDevice, byte[] txMac, byte[] rxMac)
@@ -159,19 +126,17 @@ public sealed class NativePacketEngine : IPacketEngine
             _ = elt_engine_stop(stale);
         }
 
-        // The first pcap call must not be the thing that discovers Npcap is missing. wpcap is
-        // delay-loaded, so a missing DLL surfaces as an MSVC loader exception raised from inside
-        // the engine on first use - a foreign exception outside `catch_unwind`'s contract, which
-        // can terminate the process instead of producing the ELT_ERR_OPEN_FAILED the ABI promises.
-        // The Rig page's preflight checks this, but Lab Mode's hardware start does not go through
-        // it, so the check belongs here where every hardware run passes.
-        if (!NpcapLoader.TryLoad())
+        // Before any pcap call, because a delay-load failure is a foreign exception the ABI cannot
+        // turn into a code. The Rig page's preflight checks this too, but Lab Mode's hardware start
+        // does not go through it, so every hardware entry point checks for itself.
+        try
+        {
+            NativeEngineLibrary.RequireNpcap();
+        }
+        catch
         {
             State = EngineState.Idle;
-            throw new InvalidOperationException(
-                "Npcap is not installed, or is not where this expects it "
-                + $"({NpcapLoader.NpcapDirectory}). Install it from https://npcap.com with "
-                + "WinPcap-compatible mode turned off.");
+            throw;
         }
 
         // Checked on the way in to the first run rather than at application startup. Doing it at
@@ -389,21 +354,7 @@ public sealed class NativePacketEngine : IPacketEngine
         }
     }
 
-    private static string Describe(int code) => code switch
-    {
-        -1 => "The engine rejected a null argument.",
-        -2 => "A device name was not valid UTF-8.",
-        -3 =>
-            "Npcap could not open one of the adapters. It is usually a device name that no longer " +
-            "matches an adapter, or the process not running elevated.",
-        -4 => "The engine faulted internally. The run was abandoned; adapter settings are unaffected.",
-        -5 => "The engine is stopped, or another call is using it.",
-        -6 => "Transmit and receive named the same adapter, so no frame would cross a cable.",
-        -7 =>
-            $"The frame size is outside {EthernetFrame.MinimumBytes}-9018 bytes, which is what an " +
-            "Ethernet link can carry.",
-        _ => $"The engine returned an unrecognised code ({code}).",
-    };
+    private static string Describe(int code) => NativeEngineLibrary.Describe(code);
 
     private static string DescribeFault(int fault) => fault switch
     {

@@ -21,9 +21,12 @@ public interface IAdapterConfigurator
     /// </summary>
     /// <remarks>
     /// A write that would not change anything is skipped entirely rather than journaled, so a
-    /// no-op cannot leave a restore entry behind that outlives the run.
+    /// no-op cannot leave a restore entry behind that outlives the run. The return value says which
+    /// of the two happened, because a caller that interprets the resulting adapter state as
+    /// evidence needs to know whether this call produced it - see
+    /// <see cref="ConfigurationOutcome"/>.
     /// </remarks>
-    Task ApplyAsync(
+    Task<ConfigurationOutcome> ApplyAsync(
         NetworkAdapterInfo adapter,
         string keyword,
         string registryValue,
@@ -32,22 +35,33 @@ public interface IAdapterConfigurator
     /// <summary>
     /// Forces a speed and duplex, resolving it to whatever registry value this driver uses.
     /// </summary>
+    /// <returns>
+    /// Whether the setting was changed or already held the requested value.
+    /// <see cref="ConfigurationOutcome.AlreadyAtTarget"/> from a probe's own force is a warning:
+    /// the adapter was pinned before this run touched it.
+    /// </returns>
     /// <exception cref="InvalidOperationException">
     /// Thrown when the driver does not offer the setting. Note that 1000BASE-T and above are
     /// never genuinely forceable - see <see cref="SpeedDuplex.IsTrulyForceable"/> - so a driver
     /// offering them is restricting advertised capability, not pinning the link.
     /// </exception>
-    Task ForceSpeedAsync(
+    Task<ConfigurationOutcome> ForceSpeedAsync(
         NetworkAdapterInfo adapter,
         SpeedDuplex setting,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Puts every journaled property back and clears the journal.
+    /// Puts journaled properties back, and removes only what it put back.
     /// </summary>
+    /// <param name="scope">
+    /// Which entries this pass may touch. <see cref="RestoreScope.Everything"/> at startup and at
+    /// end of run; a narrower scope for anything undoing its own change inside a run that is still
+    /// going - see <see cref="RestoreScope"/> for why that distinction is load-bearing.
+    /// </param>
     /// <remarks>
     /// Safe to call at startup with no run in progress: a non-empty journal then is proof that a
     /// previous run died without cleaning up, and this is the recovery path.
     /// </remarks>
-    Task<RestoreOutcome> RestoreAllAsync(CancellationToken cancellationToken = default);
+    Task<RestoreOutcome> RestoreAsync(
+        RestoreScope scope, CancellationToken cancellationToken = default);
 }

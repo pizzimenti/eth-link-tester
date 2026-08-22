@@ -33,7 +33,7 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         string adapterId, CancellationToken cancellationToken = default) =>
         _writer.ReadPropertiesAsync(adapterId, cancellationToken);
 
-    public async Task ApplyAsync(
+    public async Task<ConfigurationOutcome> ApplyAsync(
         NetworkAdapterInfo adapter,
         string keyword,
         string registryValue,
@@ -55,10 +55,12 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
         // A write that changes nothing still leaves a journal entry behind, and that entry would
         // outlive the run and be "restored" on a later launch - reporting a recovery that never
-        // needed to happen.
+        // needed to happen. Reported rather than swallowed: this is the only place that knows the
+        // adapter was already in the requested state, and a probe that reads the resulting state as
+        // evidence has to know that this run did not produce it.
         if (string.Equals(property.RegistryValue, registryValue, StringComparison.Ordinal))
         {
-            return;
+            return ConfigurationOutcome.AlreadyAtTarget;
         }
 
         await _journal.RecordAsync(
@@ -75,9 +77,11 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
 
         await _writer.WriteAsync(adapter.Id, property.Keyword, registryValue, cancellationToken)
             .ConfigureAwait(false);
+
+        return ConfigurationOutcome.Applied;
     }
 
-    public async Task ForceSpeedAsync(
+    public async Task<ConfigurationOutcome> ForceSpeedAsync(
         NetworkAdapterInfo adapter,
         SpeedDuplex setting,
         CancellationToken cancellationToken = default)
@@ -92,12 +96,16 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
                 $"'{adapter.Name}' does not offer {setting}. " +
                 $"Available: {string.Join(", ", property.Options.Select(o => o.DisplayValue))}.");
 
-        await ApplyAsync(adapter, WellKnownKeywords.SpeedDuplex, registryValue, cancellationToken)
+        return await ApplyAsync(
+                adapter, WellKnownKeywords.SpeedDuplex, registryValue, cancellationToken)
             .ConfigureAwait(false);
     }
 
-    public async Task<RestoreOutcome> RestoreAllAsync(CancellationToken cancellationToken = default)
+    public async Task<RestoreOutcome> RestoreAsync(
+        RestoreScope scope, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(scope);
+
         var pending = await _journal.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
 
         if (pending.IsEmpty)
@@ -110,7 +118,11 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         // one torn write would otherwise turn the journal into something that silently swallows
         // the rest of the run. Discard it and say so - adapters may still be altered, and only
         // the user can check now.
-        if (pending.IsUnreadable)
+        //
+        // A full pass only. Discarding is a recovery action taken when nothing in the journal can
+        // be acted on; a probe putting one property back has no business throwing away records it
+        // cannot read and did not write.
+        if (pending.IsUnreadable && scope.IsEverything)
         {
             await _journal.DiscardAsync(cancellationToken).ConfigureAwait(false);
 
@@ -133,7 +145,7 @@ public sealed class GuardedAdapterConfigurator : IAdapterConfigurator
         var propertiesByAdapter = new Dictionary<string, IReadOnlyList<AdapterProperty>>(
             StringComparer.OrdinalIgnoreCase);
 
-        foreach (var entry in OriginalValues(pending.Entries))
+        foreach (var entry in OriginalValues(pending.Entries).Where(scope.Includes))
         {
             try
             {
