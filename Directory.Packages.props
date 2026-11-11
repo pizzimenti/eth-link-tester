@@ -25,7 +25,7 @@
 
   <ItemGroup Label="UI">
     <!-- WinUI 3 / Fluent 2. Note this is a 2.x product now, not 1.x. -->
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <!-- Sustained 30-60 Hz strip-chart redraw; chosen over LiveCharts2 for that reason. -->
     <PackageVersion Include="ScottPlot.WinUI" Version="5.1.59" />
